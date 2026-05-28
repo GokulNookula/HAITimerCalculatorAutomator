@@ -37,7 +37,7 @@ emailInput.send_keys(secret.email)
 # Clicking next button
 nextButton = WebDriverWait(googleDriver, 20).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="identifierNext"]/div/button/span')))
 nextButton.click()
-
+time.sleep(1)
 # Keep browser open for 30 seconds
 time.sleep(400000)
 
