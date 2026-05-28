@@ -96,7 +96,7 @@ def parse_date(date_text):
 # startDate = parse_date(startDateInput)
 # endDate = parse_date(endDateInput)
 
-startDate = parse_date("5/17/2026")
+startDate = parse_date("5/10/2026")
 endDate = parse_date("5/27/2026")
 
 # Create Output folder if it does not exist
