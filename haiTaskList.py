@@ -71,12 +71,13 @@ for window in driver.window_handles:
         break
 
 # Wait for page element
-headerText = WebDriverWait(driver, 20).until(
-    EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1"))
-)
-
+headerText = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1")))
 # Get and print text
 print(headerText.text)
+
+# Getting the user's credential copy button
+userCredCpyButton = WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[2]/div[2]/div/div/p')))
+print(userCredCpyButton.text)
 
 # Keep browser open for 30 seconds
 time.sleep(400000)
