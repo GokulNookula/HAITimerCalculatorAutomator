@@ -7,6 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import re
 # import secret
 import myThing #DELETE ME LATER once fully done coding
 
@@ -74,14 +75,18 @@ for window in driver.window_handles:
 
         break
 
-# Wait for page element
-headerText = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1")))
-# Get and print text
-print(headerText.text)
+# Getting the name of the project
+projName = WebDriverWait(driver, 120).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1")))
+projName = projName.text
+
+# Getting the pay of the project
+projPayRateElement = WebDriverWait(driver, 120).until(EC.presence_of_element_located((By.XPATH, "//p[contains(@class,'rosetta-body-medium') and contains(text(),'/hr')]")))
+projPayRate = re.search(r'\$\d+(?:\.\d+)?', projPayRateElement.text).group()
+print(projPayRate)
 
 # Getting the user's credential copy button
 userEmailCpy = WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[2]/div[2]/div/div/p')))
-print(userEmailCpy.text)
+userEmailCpy = userEmailCpy.text
 
 '''
 Make this part of the code into a seperate part as a different file called dataSaver.py or something
@@ -133,7 +138,10 @@ for row in rows:
                     "My Tasks": taskID,
                     "Status": status,
                     "Last worked on": lastWorkedOn,
-                    "Total time": totalTime
+                    "Total time": totalTime,
+                    "Project Name": projName,
+                    "Project Pay Per Hour": projPayRate,
+                    "HAI Email": userEmailCpy
                 })
 
 # Check if CSV already exists
@@ -142,7 +150,7 @@ fileExists = os.path.exists(csvFilePath)
 # Write CSV
 with open(csvFilePath, "w", newline="", encoding="utf-8") as file:
 
-    writer = csv.DictWriter(file,fieldnames=["My Tasks", "Status", "Last worked on", "Total time"])
+    writer = csv.DictWriter(file,fieldnames=["My Tasks", "Status", "Last worked on", "Total time", "Project Name", "Project Pay Per Hour", "HAI Email"])
 
     writer.writeheader()
     writer.writerows(taskDateDict)
