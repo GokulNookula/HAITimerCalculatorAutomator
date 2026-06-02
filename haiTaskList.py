@@ -3,167 +3,314 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
+from datetime import datetime
 import re
 # import secret
 import myThing #DELETE ME LATER once fully done coding
 
-import csv # Make this part of code in a seperate python file
-from datetime import datetime # Make this part of code in a seperate python file
-import os # Make this part of code in a seperate python file
+
+def parseDate(dateText: str):
+    return datetime.strptime(dateText.strip(), "%m/%d/%Y").date()
 
 
-# Start Chrome and maximize window
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=(lambda o: (o.add_argument("--start-maximized"), o)[1])(Options()))
+def startChromeDriver():
+    # Start Chrome and maximize window
+    chromeOptions = Options()
+    chromeOptions.add_argument("--start-maximized")
 
-# Open the page
-driver.get("https://ai.joinhandshake.com/fellow/15727563-a6cd-46b6-9c57-9bc1359b43b8/tasks")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chromeOptions)
+    return driver
 
-# Wait for Google button and click it
-googleButton = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(),'Continue with Google')]")))
-googleButton.click()
 
-# Save original Handshake tab
-mainWindow = driver.current_window_handle
+def waitForElement(driver, byType, locatorValue, timeoutSeconds, waitCondition, errorMessage):
+    try:
+        return WebDriverWait(driver, timeoutSeconds).until(waitCondition((byType, locatorValue)))
+    except TimeoutException as error:
+        raise RuntimeError(f"{errorMessage} Timed out after {timeoutSeconds} seconds. Locator used: {locatorValue}") from error
 
-# Wait for popup window
-WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
 
-for window in driver.window_handles:
+def extractProjectPayRate(payRateText: str):
+    payRateMatch = re.search(r'\$\d+(?:\.\d+)?', payRateText)
 
-    driver.switch_to.window(window)
+    if not payRateMatch:
+        raise ValueError(f"Could not find the project pay rate inside this text: {payRateText}")
 
-    # Only continue if this is the Google sign in page
-    if "accounts.google.com" in driver.current_url:
+    return payRateMatch.group()
 
-        # Inputting the email
-        emailInput = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, '//*[@id="identifierId"]')))
-        emailInput.send_keys(myThing.email)
 
-        # Clicking next button
-        nextButton = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="identifierNext"]/div/button/span')))
-        nextButton.click()
+def loginToHandshakeAI(driver):
+    # Wait for Google button and click it
+    googleButton = waitForElement(
+        driver,
+        By.XPATH,
+        "//span[contains(text(),'Continue with Google')]",
+        20,
+        EC.element_to_be_clickable,
+        "Could not find or click the 'Continue with Google' button."
+    )
+    googleButton.click()
 
-        # Wait for the username field to be present and enter the username
-        usernameInput = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "username")))
-        usernameInput.send_keys(myThing.netid)
+    # Save original Handshake tab
+    mainWindow = driver.current_window_handle
 
-        # Locate and fill in the password field
-        passwordInput = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "password")))
-        passwordInput.send_keys(myThing.password)
+    # Wait for popup window
+    try:
+        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
+    except TimeoutException as error:
+        raise RuntimeError("Google login popup did not open after clicking 'Continue with Google'.") from error
 
-        # Locate and click the Sign In button
-        signInButton = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="fm1"]/div[2]/button')))
-        signInButton.click()
+    googleWindowFound = False
 
-        # Click "Yes this is my device" for UCR
-        yesMyDeviceButton = WebDriverWait(driver, 60).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="trust-browser-button"]')))
-        yesMyDeviceButton.click()
+    for window in driver.window_handles:
 
-        # Clicking Continue on Verify it's you page
-        continueButton = WebDriverWait(driver, 60).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="yDmH0d"]/div[1]/div[1]/div[2]/div/div/div[3]/div/div[1]/div/div/button')))
-        continueButton.click()
+        driver.switch_to.window(window)
 
-        # Wait until popup closes
-        WebDriverWait(driver, 60).until(lambda d: len(d.window_handles) == 1)
+        # Only continue if this is the Google sign in page
+        if "accounts.google.com" in driver.current_url:
+            googleWindowFound = True
 
-        # Switch back to main Handshake window
-        driver.switch_to.window(mainWindow)
+            # Inputting the email
+            emailInput = waitForElement(
+                driver,
+                By.XPATH,
+                '//*[@id="identifierId"]',
+                20,
+                EC.presence_of_element_located,
+                "Could not find the Google email input."
+            )
+            emailInput.send_keys(myThing.email)
 
-        break
+            # Clicking next button
+            nextButton = waitForElement(
+                driver,
+                By.XPATH,
+                '//*[@id="identifierNext"]/div/button/span',
+                20,
+                EC.element_to_be_clickable,
+                "Could not find or click the Google email next button."
+            )
+            nextButton.click()
 
-# Getting the name of the project
-projName = WebDriverWait(driver, 120).until(EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1")))
-projName = projName.text
+            # Wait for the username field to be present and enter the username
+            usernameInput = waitForElement(
+                driver,
+                By.ID,
+                "username",
+                20,
+                EC.presence_of_element_located,
+                "Could not find the UCR username input."
+            )
+            usernameInput.send_keys(myThing.netid)
 
-# Getting the pay of the project
-projPayRateElement = WebDriverWait(driver, 120).until(EC.presence_of_element_located((By.XPATH, "//p[contains(@class,'rosetta-body-medium') and contains(text(),'/hr')]")))
-projPayRate = re.search(r'\$\d+(?:\.\d+)?', projPayRateElement.text).group()
-print(projPayRate)
+            # Locate and fill in the password field
+            passwordInput = waitForElement(
+                driver,
+                By.ID,
+                "password",
+                20,
+                EC.presence_of_element_located,
+                "Could not find the UCR password input."
+            )
+            passwordInput.send_keys(myThing.password)
 
-# Getting the user's credential copy button
-userEmailCpy = WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.XPATH, '/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[2]/div[2]/div/div/p')))
-userEmailCpy = userEmailCpy.text
+            # Locate and click the Sign In button
+            signInButton = waitForElement(
+                driver,
+                By.XPATH,
+                '//*[@id="fm1"]/div[2]/button',
+                20,
+                EC.element_to_be_clickable,
+                "Could not find or click the UCR sign in button."
+            )
+            signInButton.click()
 
-'''
-Make this part of the code into a seperate part as a different file called dataSaver.py or something
-'''
-def parse_date(date_text):
-    return datetime.strptime(date_text.strip(), "%m/%d/%Y").date()
+            # Click "Yes this is my device" for UCR
+            yesMyDeviceButton = waitForElement(
+                driver,
+                By.XPATH,
+                '//*[@id="trust-browser-button"]',
+                60,
+                EC.element_to_be_clickable,
+                "Could not find or click the UCR 'Yes this is my device' button."
+            )
+            yesMyDeviceButton.click()
 
-# # User inputs pay-period range
-# startDateInput = input("Enter start date MM/DD/YYYY: ")
-# endDateInput = input("Enter end date MM/DD/YYYY: ")
+            # Clicking Continue on Verify it's you page
+            continueButton = waitForElement(
+                driver,
+                By.XPATH,
+                '//*[@id="yDmH0d"]/div[1]/div[1]/div[2]/div/div/div[3]/div/div[1]/div/div/button',
+                60,
+                EC.element_to_be_clickable,
+                "Could not find or click the Google verify continue button."
+            )
+            continueButton.click()
 
-# startDate = parse_date(startDateInput)
-# endDate = parse_date(endDateInput)
+            # Wait until popup closes
+            try:
+                WebDriverWait(driver, 60).until(lambda d: len(d.window_handles) == 1)
+            except TimeoutException as error:
+                raise RuntimeError("Google login popup did not close after finishing the login flow.") from error
 
-startDate = parse_date("5/10/2026")
-endDate = parse_date("5/27/2026")
+            # Switch back to main Handshake window
+            driver.switch_to.window(mainWindow)
 
-# Create Output folder if it does not exist
-outputFolder = "Output"
+            break
 
-if not os.path.exists(outputFolder):
-    os.makedirs(outputFolder)
+    if not googleWindowFound:
+        raise RuntimeError("Could not find the Google sign in popup window.")
 
-# CSV file path
-csvFilePath = os.path.join(outputFolder, "hhTaskFileList.csv")
 
-# Wait for table rows to load
-rows = WebDriverWait(driver, 30).until(
-    EC.presence_of_all_elements_located((By.XPATH, "//table/tbody/tr"))
-)
+def scrapeTaskRows(driver, startDate, endDate, projName, projPayRate, userEmailCpy):
+    # Wait for table rows to load
+    rows = waitForElement(
+        driver,
+        By.XPATH,
+        "//table/tbody/tr",
+        30,
+        EC.presence_of_all_elements_located,
+        "Could not find the Handshake task table rows."
+    )
 
-taskDateDict = []
+    taskDateDict = []
 
-# Now we need to iterate through the entire table to get the pay details
-for row in rows:
-    cells = row.find_elements(By.TAG_NAME, "td")
+    # Now we need to iterate through the entire table to get the pay details
+    for row in rows:
+        cells = row.find_elements(By.TAG_NAME, "td")
 
-    if len(cells) >= 4:
-        taskID = cells[0].text.strip().replace("\n", "")
-        status = cells[1].text.strip()
-        lastWorkedOn = cells[2].text.strip()
-        totalTime = cells[3].text.strip()
+        if len(cells) >= 4:
+            taskID = cells[0].text.strip().replace("\n", "")
+            status = cells[1].text.strip()
+            lastWorkedOn = cells[2].text.strip()
+            totalTime = cells[3].text.strip()
 
-        if lastWorkedOn:
-            taskDate = parse_date(lastWorkedOn)
+            if lastWorkedOn:
+                try:
+                    taskDate = parseDate(lastWorkedOn)
+                except ValueError:
+                    print(f"Skipping task {taskID}: could not parse date '{lastWorkedOn}'.")
+                    continue
 
-            if startDate <= taskDate <= endDate:
-                taskDateDict.append({
-                    "My Tasks": taskID,
-                    "Status": status,
-                    "Last worked on": lastWorkedOn,
-                    "Total time": totalTime,
-                    "Project Name": projName,
-                    "Project Pay Per Hour": projPayRate,
-                    "HAI Email": userEmailCpy
-                })
+                if startDate <= taskDate <= endDate:
+                    taskDateDict.append({
+                        "My Tasks": taskID,
+                        "Status": status,
+                        "Last worked on": lastWorkedOn,
+                        "Total time": totalTime,
+                        "Project Name": projName,
+                        "Project Pay Per Hour": projPayRate,
+                        "HAI Email": userEmailCpy
+                    })
 
-# Check if CSV already exists
-fileExists = os.path.exists(csvFilePath)
+    return taskDateDict
 
-# Write CSV
-with open(csvFilePath, "w", newline="", encoding="utf-8") as file:
 
-    writer = csv.DictWriter(file,fieldnames=["My Tasks", "Status", "Last worked on", "Total time", "Project Name", "Project Pay Per Hour", "HAI Email"])
+def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeBrowserWhenDone: bool = True):
+    driver = None
+    currentStep = "starting the scraper"
 
-    writer.writeheader()
-    writer.writerows(taskDateDict)
+    try:
+        startDate = parseDate(startDateInput)
+        endDate = parseDate(endDateInput)
 
-if fileExists:
-    print(f"Updated existing CSV file: {csvFilePath}")
-else:
-    print(f"Created new CSV file: {csvFilePath}")
+        if startDate > endDate:
+            raise ValueError("The start date cannot be after the end date.")
 
-print(f"Saved {len(taskDateDict)} tasks.")
+        currentStep = "starting Chrome"
+        driver = startChromeDriver()
 
-# Keep browser open for 30 seconds
-time.sleep(400000)
+        currentStep = "opening the Handshake AI task page"
+        # Open the page
+        driver.get(link)
 
-# # Close browser
-# driver.quit()
+        currentStep = "logging into Handshake AI with Google"
+        loginToHandshakeAI(driver)
+
+        currentStep = "getting the name of the project"
+        # Getting the name of the project
+        projNameElement = waitForElement(
+            driver,
+            By.XPATH,
+            "/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[1]/h1",
+            120,
+            EC.presence_of_element_located,
+            "Could not find the project name on the Handshake task page."
+        )
+        projName = projNameElement.text
+
+        currentStep = "getting the pay of the project"
+        # Getting the pay of the project
+        projPayRateElement = waitForElement(
+            driver,
+            By.XPATH,
+            "//p[contains(@class,'rosetta-body-medium') and contains(text(),'/hr')]",
+            120,
+            EC.presence_of_element_located,
+            "Could not find the project pay rate on the Handshake task page."
+        )
+        projPayRate = extractProjectPayRate(projPayRateElement.text)
+        print(f"Project pay rate found: {projPayRate}")
+
+        currentStep = "getting the user's credential copy button"
+        # Getting the user's credential copy button
+        userEmailElement = waitForElement(
+            driver,
+            By.XPATH,
+            '/html/body/div[2]/div[2]/main/main/div/div[1]/div[1]/div[2]/div[2]/div/div/p',
+            60,
+            EC.presence_of_element_located,
+            "Could not find the HAI email/credential text on the Handshake task page."
+        )
+        userEmailCpy = userEmailElement.text
+
+        currentStep = "scraping the task rows"
+        taskDateDict = scrapeTaskRows(driver, startDate, endDate, projName, projPayRate, userEmailCpy)
+
+        print(f"Found {len(taskDateDict)} tasks between {startDateInput} and {endDateInput}.")
+        return taskDateDict
+
+    except ValueError as error:
+        print("Input error: please check your date range and input values.")
+        print(f"Details: {error}")
+        return None
+
+    except RuntimeError as error:
+        print("Selenium failed while running the Handshake AI scraper.")
+        print(f"Step that failed: {currentStep}")
+        print(f"Details: {error}")
+        return None
+
+    except NoSuchWindowException as error:
+        print("Selenium failed because the browser window or login popup closed unexpectedly.")
+        print(f"Step that failed: {currentStep}")
+        print(f"Details: {error}")
+        return None
+
+    except WebDriverException as error:
+        print("Selenium/WebDriver failed. This could be a ChromeDriver, Chrome, network, or browser automation issue.")
+        print(f"Step that failed: {currentStep}")
+        print(f"Details: {error}")
+        return None
+
+    except Exception as error:
+        print("The scraper failed because of an unexpected error.")
+        print(f"Step that failed: {currentStep}")
+        print(f"Details: {error}")
+        return None
+
+    finally:
+        if driver is not None and closeBrowserWhenDone:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
+# Backwards compatible wrapper so old code using TaskScraper(...) still works
+# This uses wide default dates only if you call the old function directly.
+def TaskScraper(link: str):
+    return haiTaskListScraper(link, "01/01/2000", "12/31/2100")
