@@ -1,5 +1,6 @@
 .vscode
 __pycache__
 Output/*
+HAITimerCalculatorAutomator_merged
 secret.py
 myThing.py

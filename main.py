@@ -1,5 +1,6 @@
 from haiTaskList import haiTaskListScraper
 from haiCSVCreator import haiTaskListCSVCreator
+from haiExcelCreator import createHandshakeEarningsTracker
 
 
 def getUserInputs():
@@ -24,12 +25,15 @@ def getUserInputs():
     keepBrowserOpenInput = input("Keep browser open after scraping? yes/no, default no: ").strip().lower()
     closeBrowserWhenDone = keepBrowserOpenInput not in ["yes", "y"]
 
-    return taskLink, startDateInput, endDateInput, outputFolder, closeBrowserWhenDone
+    createExcelInput = input("Create Excel tracker after CSV? yes/no, default yes: ").strip().lower()
+    createExcelTracker = createExcelInput not in ["no", "n"]
+
+    return taskLink, startDateInput, endDateInput, outputFolder, closeBrowserWhenDone, createExcelTracker
 
 
 def main():
     try:
-        taskLink, startDateInput, endDateInput, outputFolder, closeBrowserWhenDone = getUserInputs()
+        taskLink, startDateInput, endDateInput, outputFolder, closeBrowserWhenDone, createExcelTracker = getUserInputs()
 
         # Run the Selenium task scraper first
         taskDateDict = haiTaskListScraper(taskLink, startDateInput, endDateInput, closeBrowserWhenDone)
@@ -45,6 +49,21 @@ def main():
             print(f"Toolchain finished successfully. CSV saved here: {csvFilePath}")
         else:
             print("The scraper finished, but the CSV file was not created.")
+
+        # Run the Excel creator using the CSV inside the same Output folder
+        if createExcelTracker:
+            excelFilePath = createHandshakeEarningsTracker(
+                csvPath=csvFilePath,
+                outputFolder=outputFolder,
+                outputFileName="HandshakeEarningTracker.xlsx",
+            )
+
+            if excelFilePath:
+                print(f"Toolchain finished successfully. Excel saved here: {excelFilePath}")
+            else:
+                print("CSV was created, but the Excel tracker was not created.")
+        else:
+            print("Toolchain finished successfully. Excel creation was skipped.")
 
     except KeyboardInterrupt:
         print("Program stopped by user.")

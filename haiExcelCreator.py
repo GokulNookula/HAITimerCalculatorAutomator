@@ -32,24 +32,21 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.defined_name import DefinedName
 
 
-approvedTaskTypes = [
-    "250929-text-to-image-h2h",
-    "251016-vision-vlm-h2h",
-    "251210-conversations-to-response-h2h",
-    "260124-text-image-to-text-h2h",
-    "260126-text-to-image-compare",
-    "260209-omni-elo",
-    "260212-ud-caption-elo",
-    "260227-omni-s2s-elo",
-    "260308-omni-r2i-elo",
-    "260310-live-s2s-elo",
-    "260403-omni-multiturn-elo",
-    "vs-1776345130-video-audio-caption-comparison-robinsr-v2-apr16",
-]
+defaultTimeCapsMin = {
+    "250929-text-to-image-h2h": 10,
+    "251016-vision-vlm-h2h": 20,
+    "251210-conversations-to-response-h2h": 10,
+    "260124-text-image-to-text-h2h": 15,
+    "260126-text-to-image-compare": 10,
+    "260209-omni-elo": 10,
+    "260212-ud-caption-elo": 20,
+    "260308-omni-r2i-elo": 15,
+    "260310-live-s2s-elo": 45,
+    "260403-omni-multiturn-elo": 20,
+    "vs-1776345130-video-audio-caption-comparison-robinsr-v2-apr16": 20,
+}
 
-# Put task caps here once you know them. Use minutes.
-# Example: "260209-omni-elo": 10.0 means 10 paid minutes max.
-defaultTimeCapsMin = {taskType: "" for taskType in approvedTaskTypes}
+approvedTaskTypes = list(defaultTimeCapsMin.keys())
 
 
 headerFill = PatternFill("solid", fgColor="1F4E78")
@@ -223,17 +220,22 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     styleTitle(wsTaskTypes, "Approved Task Types and Time Caps", 3)
     wsTaskTypes.append(["Task Type", "Time Cap Minutes", "Notes"])
     for taskType in approvedTaskTypes:
-        wsTaskTypes.append([taskType, defaultTimeCapsMin.get(taskType, ""), "Enter cap in minutes, for example 10.25 for 10:15."])
+        wsTaskTypes.append([
+            taskType,
+            defaultTimeCapsMin.get(taskType, ""),
+            "You can change this max paid time anytime.",
+        ])
+
     styleHeaderRow(wsTaskTypes, 2, 1, 3)
-    setColumnWidths(wsTaskTypes, {"A": 75, "B": 18, "C": 45})
+    setColumnWidths(wsTaskTypes, {"A": 75, "B": 18, "C": 50})
     wsTaskTypes.freeze_panes = "A3"
     applyBasicSheetFormatting(wsTaskTypes)
     wsTaskTypes["A2"].comment = Comment(
-        "Add new task types anywhere below this list. The dropdown points to A3:A1000.",
+        "Approved task types. You can edit names or add more manually below the existing list.",
         "ChatGPT",
     )
     wsTaskTypes["B2"].comment = Comment(
-        "Put max paid minutes for each task type. Earnings update automatically after selecting task types on the Tasks sheet.",
+        "Max paid minutes for each approved task type. Changing this updates the Tasks sheet earnings formulas.",
         "ChatGPT",
     )
 
@@ -290,7 +292,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
             f'=IF(OR($H{rowNum}="",\'Settings\'!$B$4=""),"",$H{rowNum}/60*\'Settings\'!$B$4)'
         )
         wsTasks.cell(row=rowNum, column=7).value = (
-            f'=IFERROR(VLOOKUP($D{rowNum},\'Task Types\'!$A$3:$B$1000,2,FALSE),"")'
+            f'=IF($D{rowNum}="","",IFERROR(VLOOKUP($D{rowNum},\'Task Types\'!$A$3:$B$1000,2,FALSE),""))'
         )
         wsTasks.cell(row=rowNum, column=8).value = (
             f'=IF(OR($F{rowNum}="",$G{rowNum}=""),"",MIN($F{rowNum},$G{rowNum}))'
@@ -331,9 +333,11 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         allow_blank=True,
         showDropDown=False,
     )
-    taskDropdown.error = "Choose a task type from the dropdown, or add a new type on the Task Types sheet."
-    taskDropdown.errorTitle = "Invalid task type"
-    taskDropdown.prompt = "Pick a task type. To add a new one, add it to Task Types column A and add a cap in column B."
+    # The dropdown gives approved choices. If you need another type, add it manually in Task Types columns A:B.
+    taskDropdown.showErrorMessage = False
+    taskDropdown.error = "Choose an approved task type from the dropdown. To add a new one, add it manually in Task Types columns A:B."
+    taskDropdown.errorTitle = "Task type"
+    taskDropdown.prompt = "Pick a task type from the dropdown. To add a new type, add it manually in Task Types columns A:B."
     taskDropdown.promptTitle = "Type of Task"
     wsTasks.add_data_validation(taskDropdown)
     taskDropdown.add(f"D2:D{max(lastTaskRow + 500, 1000)}")
@@ -350,7 +354,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         wsTasks.add_table(tasksTable)
 
     wsTasks["D1"].comment = Comment(
-        "Dropdown comes from Task Types!A3:A1000. Add new task types there to expand the list.",
+        "Dropdown comes from Task Types!A3:A1000. To add a new task type, add it manually in Task Types columns A:B, then select or type it here.",
         "ChatGPT",
     )
     wsTasks["E1"].comment = Comment(
@@ -487,6 +491,79 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     outputPath.parent.mkdir(parents=True, exist_ok=True)
     wb.save(outputPath)
 
+
+
+def extractHourlyPayValue(value: str) -> float:
+    """Extracts a numeric hourly pay value from strings like '$17' or '$17/hr'."""
+    import re
+
+    text = str(value).strip()
+    payMatch = re.search(r"\d+(?:\.\d+)?", text)
+
+    if not payMatch:
+        raise ValueError(f"Could not extract hourly pay from: {value!r}")
+
+    return float(payMatch.group())
+
+
+def readProjectDetailsFromCsv(csvPath: Path) -> tuple[str, float]:
+    """Reads project name and hourly pay from the CSV created by haiCSVCreator."""
+    with csvPath.open("r", newline="", encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        firstRow = next(reader, None)
+
+    if not firstRow:
+        raise ValueError(f"CSV file is empty, so project details could not be read: {csvPath}")
+
+    projectName = str(firstRow.get("Project Name", "Handshake AI Project")).strip() or "Handshake AI Project"
+    hourlyPayText = firstRow.get("Project Pay Per Hour", "")
+    hourlyPay = extractHourlyPayValue(hourlyPayText)
+
+    return projectName, hourlyPay
+
+
+def createHandshakeEarningsTracker(
+    csvPath: str | Path | None = None,
+    outputFolder: str = "Output",
+    outputFileName: str = "HandshakeEarningTracker.xlsx",
+    projectName: str | None = None,
+    hourlyPay: float | None = None,
+) -> Path | None:
+    """Creates the Excel tracker from the CSV generated by the Selenium scraper."""
+    try:
+        resolvedCsvPath = resolveCsvPath(str(csvPath) if csvPath else None, outputFolder)
+
+        if not resolvedCsvPath.exists():
+            raise FileNotFoundError(f"CSV file not found: {resolvedCsvPath}")
+
+        if projectName is None or hourlyPay is None:
+            csvProjectName, csvHourlyPay = readProjectDetailsFromCsv(resolvedCsvPath)
+            projectName = projectName or csvProjectName
+            hourlyPay = hourlyPay if hourlyPay is not None else csvHourlyPay
+
+        outputPath = Path(outputFolder) / outputFileName
+        tasks = readTasks(resolvedCsvPath)
+        createWorkbook(tasks, projectName, float(hourlyPay), outputPath)
+
+        print(f"Created Excel tracker: {outputPath.resolve()}")
+        print(f"Tasks imported into Excel: {len(tasks)}")
+
+        return outputPath
+
+    except PermissionError as error:
+        print("Excel creation failed: Permission denied. Close the Excel file if it is open, then try again.")
+        print(f"Python error: {error}")
+        return None
+
+    except FileNotFoundError as error:
+        print("Excel creation failed: the CSV file could not be found.")
+        print(f"Python error: {error}")
+        return None
+
+    except Exception as error:
+        print("Excel creation failed because of an unexpected error.")
+        print(f"Python error: {error}")
+        return None
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create a Handshake AI earnings tracker Excel workbook from a CSV export.")
