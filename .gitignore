@@ -2,5 +2,6 @@
 __pycache__
 Output/*
 HAITimerCalculatorAutomator_merged
+Input
 secret.py
 myThing.py

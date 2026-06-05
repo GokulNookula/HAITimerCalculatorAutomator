@@ -6,23 +6,17 @@ Expected CSV columns by position:
 2. Status, ignored
 3. Date
 4. Total Time, expected as MM:SS. HH:MM:SS also works.
-
-Example:
-python haiExcelCreator.py \
-  --csv "Output/hhTaskFileList.csv" \
-  --project-name "hedgehog - evals" \
-  --hourly-pay 20 \
-  --output "Output/HandshakeEarningTracker.xlsx"
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
+import shutil
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
 from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule
@@ -521,6 +515,687 @@ def readProjectDetailsFromCsv(csvPath: Path) -> tuple[str, float]:
 
     return projectName, hourlyPay
 
+def cleanPathInput(pathValue: str | Path | None) -> Path | None:
+    if pathValue is None:
+        return None
+
+    pathText = str(pathValue).strip().strip('"').strip("'")
+
+    if not pathText:
+        return None
+
+    return Path(pathText)
+
+
+def resolveExistingWorkbookPath(
+    existingWorkbookPath: str | Path | None,
+    outputFolder: str,
+    outputFileName: str,
+) -> Path | None:
+    cleanedPath = cleanPathInput(existingWorkbookPath)
+
+    if cleanedPath is None:
+        return None
+
+    if cleanedPath.is_dir():
+        return cleanedPath / outputFileName
+
+    return cleanedPath
+
+def resolveOutputPath(
+    outputPath: str | Path | None,
+    outputFolder: str,
+    outputFileName: str,
+) -> Path:
+    cleanedOutputPath = cleanPathInput(outputPath)
+
+    if cleanedOutputPath is not None:
+        return cleanedOutputPath
+
+    return Path(outputFolder) / outputFileName
+
+
+def getHeaderMap(ws) -> dict[str, int]:
+    headerMap = {}
+
+    for cell in ws[1]:
+        if cell.value is None:
+            continue
+
+        headerName = str(cell.value).strip()
+        if headerName:
+            headerMap[headerName] = cell.column
+
+    return headerMap
+
+
+def getExistingTaskIds(wsTasks, taskIdCol: int) -> set[str]:
+    existingTaskIds = set()
+
+    for rowNum in range(2, wsTasks.max_row + 1):
+        taskId = wsTasks.cell(row=rowNum, column=taskIdCol).value
+
+        if taskId is not None and str(taskId).strip():
+            existingTaskIds.add(str(taskId).strip())
+
+    return existingTaskIds
+
+
+def updateTasksTableRange(wsTasks, lastTaskRow: int | None = None) -> None:
+    if not wsTasks.tables:
+        return
+
+    if lastTaskRow is None:
+        lastTaskRow = wsTasks.max_row
+
+    endColLetter = get_column_letter(wsTasks.max_column)
+    newRef = f"A1:{endColLetter}{lastTaskRow}"
+
+    for table in wsTasks.tables.values():
+        if table.displayName == "TasksTable":
+            table.ref = newRef
+            return
+
+def parseExcelDateValue(value):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    for dateFormat in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, dateFormat).date()
+        except ValueError:
+            pass
+
+    return None
+
+
+def removeWorksheetIfExists(workbook, sheetName: str) -> None:
+    if sheetName in workbook.sheetnames:
+        workbook.remove(workbook[sheetName])
+
+
+def getSummaryInsertIndex(workbook) -> int:
+    if "Settings" in workbook.sheetnames:
+        return workbook.sheetnames.index("Settings")
+
+    return len(workbook.sheetnames)
+
+
+def collectSummaryPeriodsFromTasks(wsTasks, headerMap: dict[str, int]) -> tuple[list[date], list[date]]:
+    taskIdCol = headerMap["Task ID"]
+    dateCol = headerMap["Date"]
+    weekStartCol = headerMap["Week Start"]
+
+    weekStartDates = set()
+    monthStartDates = set()
+
+    for rowNum in range(2, wsTasks.max_row + 1):
+        taskIdValue = wsTasks.cell(row=rowNum, column=taskIdCol).value
+
+        if taskIdValue is None or not str(taskIdValue).strip():
+            continue
+
+        taskDate = parseExcelDateValue(wsTasks.cell(row=rowNum, column=dateCol).value)
+        weekStartDate = parseExcelDateValue(wsTasks.cell(row=rowNum, column=weekStartCol).value)
+
+        if taskDate is not None:
+            monthStartDates.add(firstDayOfMonth(taskDate))
+
+        if weekStartDate is not None:
+            weekStartDates.add(weekStartDate)
+        elif taskDate is not None:
+            weekStartDates.add(weekStartMonday(taskDate))
+
+    return sorted(weekStartDates), sorted(monthStartDates)
+
+
+def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: dict[str, int]) -> None:
+    insertIndex = getSummaryInsertIndex(workbook)
+    wsSummary = workbook.create_sheet("Weekly Summary", insertIndex)
+
+    styleTitle(wsSummary, "Weekly Earnings Summary", 7)
+
+    weeklyHeaders = [
+        "Week Start",
+        "Week End",
+        "Week Label",
+        "Total Tasks",
+        "Actual Minutes",
+        "Paid Minutes",
+        "Total Earnings",
+    ]
+
+    wsSummary.append(weeklyHeaders)
+    styleHeaderRow(wsSummary, 2, 1, len(weeklyHeaders))
+
+    weekStartColLetter = get_column_letter(headerMap["Week Start"])
+    actualMinutesColLetter = get_column_letter(headerMap["Actual Minutes"])
+    paidMinutesColLetter = get_column_letter(headerMap["Paid Minutes"])
+    earningColLetter = get_column_letter(headerMap["Earning"])
+
+    for weekStartDate in weekStartDates:
+        rowNum = wsSummary.max_row + 1
+        weekEndDate = weekStartDate + timedelta(days=6)
+
+        wsSummary.append([weekStartDate, weekEndDate, None, None, None, None, None])
+
+        wsSummary.cell(row=rowNum, column=3).value = (
+            f'=TEXT(A{rowNum},"m/d/yyyy")&" - "&TEXT(B{rowNum},"m/d/yyyy")'
+        )
+        wsSummary.cell(row=rowNum, column=4).value = (
+            f'=COUNTIFS(Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
+        )
+        wsSummary.cell(row=rowNum, column=5).value = (
+            f'=SUMIFS(Tasks!${actualMinutesColLetter}:${actualMinutesColLetter},'
+            f'Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
+        )
+        wsSummary.cell(row=rowNum, column=6).value = (
+            f'=SUMIFS(Tasks!${paidMinutesColLetter}:${paidMinutesColLetter},'
+            f'Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
+        )
+        wsSummary.cell(row=rowNum, column=7).value = (
+            f'=SUMIFS(Tasks!${earningColLetter}:${earningColLetter},'
+            f'Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
+        )
+
+    lastWeekRow = max(wsSummary.max_row, 3)
+
+    setColumnWidths(
+        wsSummary,
+        {
+            "A": 14,
+            "B": 14,
+            "C": 28,
+            "D": 12,
+            "E": 16,
+            "F": 14,
+            "G": 16,
+            "I": 22,
+        },
+    )
+
+    for rowNum in range(3, lastWeekRow + 1):
+        wsSummary.cell(row=rowNum, column=1).number_format = "m/d/yyyy"
+        wsSummary.cell(row=rowNum, column=2).number_format = "m/d/yyyy"
+        wsSummary.cell(row=rowNum, column=5).number_format = "0.00"
+        wsSummary.cell(row=rowNum, column=6).number_format = "0.00"
+        wsSummary.cell(row=rowNum, column=7).number_format = '$#,##0.00'
+
+    if weekStartDates:
+        weeklyTable = Table(displayName="WeeklySummaryTable", ref=f"A2:G{lastWeekRow}")
+        weeklyTable.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium4",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        wsSummary.add_table(weeklyTable)
+
+        weeklyChart = BarChart()
+        weeklyChart.title = "Weekly Earnings"
+        weeklyChart.y_axis.title = "Earnings"
+        weeklyChart.x_axis.title = "Week"
+        weeklyChart.height = 8
+        weeklyChart.width = 18
+
+        weeklyData = Reference(wsSummary, min_col=7, min_row=2, max_row=lastWeekRow)
+        weeklyCategories = Reference(wsSummary, min_col=3, min_row=3, max_row=lastWeekRow)
+
+        weeklyChart.add_data(weeklyData, titles_from_data=True)
+        weeklyChart.set_categories(weeklyCategories)
+
+        wsSummary.add_chart(weeklyChart, "I2")
+
+    wsSummary.freeze_panes = "A3"
+    applyBasicSheetFormatting(wsSummary)
+
+
+def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap: dict[str, int]) -> None:
+    insertIndex = getSummaryInsertIndex(workbook)
+    wsMonthly = workbook.create_sheet("Monthly Summary", insertIndex)
+
+    styleTitle(wsMonthly, "Monthly Earnings Summary", 5)
+
+    monthlyHeaders = [
+        "Month",
+        "Total Tasks",
+        "Actual Minutes",
+        "Paid Minutes",
+        "Total Earnings",
+    ]
+
+    wsMonthly.append(monthlyHeaders)
+    styleHeaderRow(wsMonthly, 2, 1, len(monthlyHeaders))
+
+    dateColLetter = get_column_letter(headerMap["Date"])
+    actualMinutesColLetter = get_column_letter(headerMap["Actual Minutes"])
+    paidMinutesColLetter = get_column_letter(headerMap["Paid Minutes"])
+    earningColLetter = get_column_letter(headerMap["Earning"])
+
+    for monthStartDate in monthStartDates:
+        rowNum = wsMonthly.max_row + 1
+
+        wsMonthly.append([monthStartDate, None, None, None, None])
+
+        wsMonthly.cell(row=rowNum, column=2).value = (
+            f'=COUNTIFS(Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
+            f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
+        )
+        wsMonthly.cell(row=rowNum, column=3).value = (
+            f'=SUMIFS(Tasks!${actualMinutesColLetter}:${actualMinutesColLetter},'
+            f'Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
+            f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
+        )
+        wsMonthly.cell(row=rowNum, column=4).value = (
+            f'=SUMIFS(Tasks!${paidMinutesColLetter}:${paidMinutesColLetter},'
+            f'Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
+            f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
+        )
+        wsMonthly.cell(row=rowNum, column=5).value = (
+            f'=SUMIFS(Tasks!${earningColLetter}:${earningColLetter},'
+            f'Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
+            f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
+        )
+
+    lastMonthRow = max(wsMonthly.max_row, 3)
+
+    setColumnWidths(
+        wsMonthly,
+        {
+            "A": 16,
+            "B": 12,
+            "C": 16,
+            "D": 14,
+            "E": 16,
+            "G": 22,
+        },
+    )
+
+    for rowNum in range(3, lastMonthRow + 1):
+        wsMonthly.cell(row=rowNum, column=1).number_format = "mmm yyyy"
+        wsMonthly.cell(row=rowNum, column=3).number_format = "0.00"
+        wsMonthly.cell(row=rowNum, column=4).number_format = "0.00"
+        wsMonthly.cell(row=rowNum, column=5).number_format = '$#,##0.00'
+
+    if monthStartDates:
+        monthlyTable = Table(displayName="MonthlySummaryTable", ref=f"A2:E{lastMonthRow}")
+        monthlyTable.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium4",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        wsMonthly.add_table(monthlyTable)
+
+        monthlyChart = BarChart()
+        monthlyChart.title = "Monthly Earnings"
+        monthlyChart.y_axis.title = "Earnings"
+        monthlyChart.x_axis.title = "Month"
+        monthlyChart.height = 8
+        monthlyChart.width = 16
+
+        monthlyData = Reference(wsMonthly, min_col=5, min_row=2, max_row=lastMonthRow)
+        monthlyCategories = Reference(wsMonthly, min_col=1, min_row=3, max_row=lastMonthRow)
+
+        monthlyChart.add_data(monthlyData, titles_from_data=True)
+        monthlyChart.set_categories(monthlyCategories)
+
+        wsMonthly.add_chart(monthlyChart, "G2")
+
+    wsMonthly.freeze_panes = "A3"
+    applyBasicSheetFormatting(wsMonthly)
+
+
+def refreshSummarySheets(workbook) -> None:
+    if "Tasks" not in workbook.sheetnames:
+        return
+
+    wsTasks = workbook["Tasks"]
+    headerMap = getHeaderMap(wsTasks)
+
+    requiredHeaders = [
+        "Task ID",
+        "Date",
+        "Earning",
+        "Actual Minutes",
+        "Paid Minutes",
+        "Week Start",
+    ]
+
+    missingHeaders = [header for header in requiredHeaders if header not in headerMap]
+
+    if missingHeaders:
+        raise ValueError(
+            "Cannot refresh summaries because Tasks is missing these columns: "
+            + ", ".join(missingHeaders)
+        )
+
+    weekStartDates, monthStartDates = collectSummaryPeriodsFromTasks(wsTasks, headerMap)
+
+    removeWorksheetIfExists(workbook, "Weekly Summary")
+    removeWorksheetIfExists(workbook, "Monthly Summary")
+
+    refreshWeeklySummarySheet(workbook, weekStartDates, headerMap)
+    refreshMonthlySummarySheet(workbook, monthStartDates, headerMap)
+
+    if "Tasks" in workbook.sheetnames:
+        workbook.active = workbook.sheetnames.index("Tasks")
+
+def createUpdatedWorkbookCopy(existingWorkbookPath: Path, outputPath: Path) -> Path:
+    sourcePath = Path(existingWorkbookPath)
+    outputPath = Path(outputPath)
+    outputPath.parent.mkdir(parents=True, exist_ok=True)
+
+    sourceResolvedPath = sourcePath.resolve()
+
+    try:
+        outputResolvedPath = outputPath.resolve()
+    except FileNotFoundError:
+        outputResolvedPath = outputPath.absolute()
+
+    if sourceResolvedPath == outputResolvedPath:
+        outputPath = sourcePath.with_name(f"{sourcePath.stem}_Updated{sourcePath.suffix}")
+
+    shutil.copy2(sourcePath, outputPath)
+    return outputPath
+
+
+def parseExcelDateTimeValue(value) -> datetime:
+    if value is None:
+        return datetime.min
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
+    text = str(value).strip()
+
+    if not text:
+        return datetime.min
+
+    dateTimeFormats = [
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%y %I:%M %p",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%Y-%m-%d",
+    ]
+
+    for dateTimeFormat in dateTimeFormats:
+        try:
+            return datetime.strptime(text, dateTimeFormat)
+        except ValueError:
+            pass
+
+    return datetime.min
+
+
+def rebuildTaskRowFormulas(wsTasks, rowNum: int, headerMap: dict[str, int]) -> None:
+    earningCol = headerMap["Earning"]
+    actualMinutesCol = headerMap["Actual Minutes"]
+    paidMinutesCol = headerMap["Paid Minutes"]
+    taskTypeCol = headerMap["Type of Task"]
+    projectCol = headerMap["Project"]
+
+    actualMinutesColLetter = get_column_letter(actualMinutesCol)
+    paidMinutesColLetter = get_column_letter(paidMinutesCol)
+    taskTypeColLetter = get_column_letter(taskTypeCol)
+
+    wsTasks.cell(row=rowNum, column=earningCol).value = (
+        f'=IF(OR(${paidMinutesColLetter}{rowNum}="",\'Settings\'!$B$4=""),"",'
+        f'${paidMinutesColLetter}{rowNum}/60*\'Settings\'!$B$4)'
+    )
+
+    timeCapCol = headerMap.get("Time Cap Minutes")
+
+    if timeCapCol is not None:
+        timeCapColLetter = get_column_letter(timeCapCol)
+
+        wsTasks.cell(row=rowNum, column=timeCapCol).value = (
+            f'=IF(${taskTypeColLetter}{rowNum}="","",'
+            f'IFERROR(VLOOKUP(${taskTypeColLetter}{rowNum},'
+            f'\'Task Types\'!$A$3:$B$1000,2,FALSE),""))'
+        )
+
+        wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
+            f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${timeCapColLetter}{rowNum}=""),"",'
+            f'MIN(${actualMinutesColLetter}{rowNum},${timeCapColLetter}{rowNum}))'
+        )
+    else:
+        wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
+            f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${taskTypeColLetter}{rowNum}=""),"",'
+            f'IFERROR(MIN(${actualMinutesColLetter}{rowNum},'
+            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
+            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)),""))'
+        )
+
+    wsTasks.cell(row=rowNum, column=projectCol).value = "='Settings'!$B$3"
+
+
+def sortTasksSheetByDate(wsTasks, headerMap: dict[str, int], newestFirst: bool = True) -> int:
+    taskIdCol = headerMap["Task ID"]
+    dateCol = headerMap["Date"]
+    maxCol = wsTasks.max_column
+
+    formulaCols = {
+        headerMap["Earning"],
+        headerMap["Paid Minutes"],
+        headerMap["Project"],
+    }
+
+    if "Time Cap Minutes" in headerMap:
+        formulaCols.add(headerMap["Time Cap Minutes"])
+
+    taskRows = []
+
+    for rowNum in range(2, wsTasks.max_row + 1):
+        taskIdValue = wsTasks.cell(row=rowNum, column=taskIdCol).value
+
+        if taskIdValue is None or not str(taskIdValue).strip():
+            continue
+
+        rowValues = {}
+
+        for colNum in range(1, maxCol + 1):
+            if colNum in formulaCols:
+                continue
+
+            rowValues[colNum] = wsTasks.cell(row=rowNum, column=colNum).value
+
+        taskRows.append(
+            {
+                "taskId": str(taskIdValue).strip(),
+                "sortDateTime": parseExcelDateTimeValue(wsTasks.cell(row=rowNum, column=dateCol).value),
+                "values": rowValues,
+            }
+        )
+
+    taskRows.sort(
+        key=lambda rowData: (rowData["sortDateTime"], rowData["taskId"]),
+        reverse=newestFirst,
+    )
+
+    for rowNum in range(2, wsTasks.max_row + 1):
+        for colNum in range(1, maxCol + 1):
+            wsTasks.cell(row=rowNum, column=colNum).value = None
+
+    for outputRowNum, rowData in enumerate(taskRows, start=2):
+        for colNum, value in rowData["values"].items():
+            wsTasks.cell(row=outputRowNum, column=colNum).value = value
+
+        rebuildTaskRowFormulas(wsTasks, outputRowNum, headerMap)
+
+    lastTaskRow = len(taskRows) + 1
+
+    if wsTasks.max_row > lastTaskRow:
+        wsTasks.delete_rows(lastTaskRow + 1, wsTasks.max_row - lastTaskRow)
+
+    return len(taskRows)
+
+
+def refreshTaskTypeDropdownRange(wsTasks, headerMap: dict[str, int]) -> None:
+    if "Type of Task" not in headerMap:
+        return
+
+    taskTypeColLetter = get_column_letter(headerMap["Type of Task"])
+    targetRange = f"{taskTypeColLetter}2:{taskTypeColLetter}{max(wsTasks.max_row + 500, 1000)}"
+
+    if wsTasks.data_validations is not None:
+        for dataValidation in wsTasks.data_validations.dataValidation:
+            if dataValidation.type == "list" and str(dataValidation.formula1) == "=TaskTypeList":
+                dataValidation.add(targetRange)
+                return
+
+    taskDropdown = DataValidation(
+        type="list",
+        formula1="=TaskTypeList",
+        allow_blank=True,
+        showDropDown=False,
+    )
+    taskDropdown.showErrorMessage = False
+    taskDropdown.error = "Choose an approved task type from the dropdown. To add a new one, add it manually in Task Types columns A:B."
+    taskDropdown.errorTitle = "Task type"
+    taskDropdown.prompt = "Pick a task type from the dropdown. To add a new type, add it manually in Task Types columns A:B."
+    taskDropdown.promptTitle = "Type of Task"
+
+    wsTasks.add_data_validation(taskDropdown)
+    taskDropdown.add(targetRange)
+
+def appendMissingTasksToExistingWorkbook(
+    tasks: list[dict],
+    projectName: str,
+    hourlyPay: float,
+    existingWorkbookPath: Path,
+    outputPath: Path,
+) -> Path:
+    if not existingWorkbookPath.exists():
+        raise FileNotFoundError(f"Existing Excel tracker was not found: {existingWorkbookPath}")
+
+    updatedWorkbookPath = createUpdatedWorkbookCopy(
+        existingWorkbookPath=existingWorkbookPath,
+        outputPath=outputPath,
+    )
+
+    workbook = load_workbook(updatedWorkbookPath)
+
+    if "Tasks" not in workbook.sheetnames:
+        raise ValueError(f"Existing workbook does not have a Tasks sheet: {existingWorkbookPath}")
+
+    wsTasks = workbook["Tasks"]
+    headerMap = getHeaderMap(wsTasks)
+
+    requiredHeaders = [
+        "Task ID",
+        "Date",
+        "Total Time",
+        "Type of Task",
+        "Earning",
+        "Actual Minutes",
+        "Paid Minutes",
+        "Week Start",
+        "Week End",
+        "Project",
+    ]
+
+    missingHeaders = [header for header in requiredHeaders if header not in headerMap]
+
+    if missingHeaders:
+        raise ValueError(
+            "Existing workbook is missing required Tasks columns: "
+            + ", ".join(missingHeaders)
+        )
+
+    taskIdCol = headerMap["Task ID"]
+    dateCol = headerMap["Date"]
+    totalTimeCol = headerMap["Total Time"]
+    taskTypeCol = headerMap["Type of Task"]
+    actualMinutesCol = headerMap["Actual Minutes"]
+    weekStartCol = headerMap["Week Start"]
+    weekEndCol = headerMap["Week End"]
+
+    earningCol = headerMap["Earning"]
+    paidMinutesCol = headerMap["Paid Minutes"]
+    projectCol = headerMap["Project"]
+    timeCapCol = headerMap.get("Time Cap Minutes")
+
+    existingTaskIds = getExistingTaskIds(wsTasks, taskIdCol)
+    addedTaskCount = 0
+
+    for task in tasks:
+        taskId = str(task["taskId"]).strip()
+
+        if not taskId or taskId in existingTaskIds:
+            continue
+
+        rowNum = wsTasks.max_row + 1
+
+        wsTasks.cell(row=rowNum, column=taskIdCol).value = task["taskId"]
+        wsTasks.cell(row=rowNum, column=dateCol).value = task["date"]
+        wsTasks.cell(row=rowNum, column=totalTimeCol).value = task["totalTime"]
+        wsTasks.cell(row=rowNum, column=taskTypeCol).value = ""
+        wsTasks.cell(row=rowNum, column=actualMinutesCol).value = task["actualMinutes"]
+        wsTasks.cell(row=rowNum, column=weekStartCol).value = task["weekStart"]
+        wsTasks.cell(row=rowNum, column=weekEndCol).value = task["weekEnd"]
+
+        rebuildTaskRowFormulas(wsTasks, rowNum, headerMap)
+
+        wsTasks.cell(row=rowNum, column=dateCol).number_format = "m/d/yyyy"
+        wsTasks.cell(row=rowNum, column=earningCol).number_format = '$#,##0.00'
+        wsTasks.cell(row=rowNum, column=actualMinutesCol).number_format = "0.00"
+        wsTasks.cell(row=rowNum, column=paidMinutesCol).number_format = "0.00"
+        wsTasks.cell(row=rowNum, column=weekStartCol).number_format = "m/d/yyyy"
+        wsTasks.cell(row=rowNum, column=weekEndCol).number_format = "m/d/yyyy"
+
+        if timeCapCol is not None:
+            wsTasks.cell(row=rowNum, column=timeCapCol).number_format = "0.00"
+
+        wsTasks.cell(row=rowNum, column=projectCol).number_format = "General"
+
+        existingTaskIds.add(taskId)
+        addedTaskCount += 1
+
+    sortedTaskCount = sortTasksSheetByDate(wsTasks, headerMap, newestFirst=True)
+    lastTaskRow = sortedTaskCount + 1
+
+    updateTasksTableRange(wsTasks, lastTaskRow=lastTaskRow)
+    refreshTaskTypeDropdownRange(wsTasks, headerMap)
+    refreshSummarySheets(workbook)
+
+    if "Settings" in workbook.sheetnames:
+        wsSettings = workbook["Settings"]
+
+        if wsSettings.max_row >= 3:
+            wsSettings["B3"].value = projectName
+
+        if wsSettings.max_row >= 4:
+            wsSettings["B4"].value = hourlyPay
+
+    workbook.save(updatedWorkbookPath)
+
+    print(f"Original Excel tracker was not edited: {existingWorkbookPath.resolve()}")
+    print(f"Updated Excel tracker copy saved here: {updatedWorkbookPath.resolve()}")
+    print(f"New tasks added into copied Excel tracker: {addedTaskCount}")
+    print(f"Skipped duplicate task IDs: {len(tasks) - addedTaskCount}")
+    print(f"Tasks sorted by date newest first: {sortedTaskCount}")
+
+    return updatedWorkbookPath
 
 def createHandshakeEarningsTracker(
     csvPath: str | Path | None = None,
@@ -528,8 +1203,10 @@ def createHandshakeEarningsTracker(
     outputFileName: str = "HandshakeEarningTracker.xlsx",
     projectName: str | None = None,
     hourlyPay: float | None = None,
+    existingWorkbookPath: str | Path | None = None,
+    outputPath: str | Path | None = None,
 ) -> Path | None:
-    """Creates the Excel tracker from the CSV generated by the Selenium scraper."""
+    """Creates a new tracker or updates a copied existing tracker with missing CSV task IDs only."""
     try:
         resolvedCsvPath = resolveCsvPath(str(csvPath) if csvPath else None, outputFolder)
 
@@ -541,14 +1218,30 @@ def createHandshakeEarningsTracker(
             projectName = projectName or csvProjectName
             hourlyPay = hourlyPay if hourlyPay is not None else csvHourlyPay
 
-        outputPath = Path(outputFolder) / outputFileName
         tasks = readTasks(resolvedCsvPath)
-        createWorkbook(tasks, projectName, float(hourlyPay), outputPath)
+        finalOutputPath = resolveOutputPath(outputPath, outputFolder, outputFileName)
 
-        print(f"Created Excel tracker: {outputPath.resolve()}")
+        resolvedExistingWorkbookPath = resolveExistingWorkbookPath(
+            existingWorkbookPath,
+            outputFolder,
+            outputFileName,
+        )
+
+        if resolvedExistingWorkbookPath is not None:
+            return appendMissingTasksToExistingWorkbook(
+                tasks=tasks,
+                projectName=projectName,
+                hourlyPay=float(hourlyPay),
+                existingWorkbookPath=resolvedExistingWorkbookPath,
+                outputPath=finalOutputPath,
+            )
+
+        createWorkbook(tasks, projectName, float(hourlyPay), finalOutputPath)
+
+        print(f"Created Excel tracker: {finalOutputPath.resolve()}")
         print(f"Tasks imported into Excel: {len(tasks)}")
 
-        return outputPath
+        return finalOutputPath
 
     except PermissionError as error:
         print("Excel creation failed: Permission denied. Close the Excel file if it is open, then try again.")
@@ -556,7 +1249,7 @@ def createHandshakeEarningsTracker(
         return None
 
     except FileNotFoundError as error:
-        print("Excel creation failed: the CSV file could not be found.")
+        print("Excel creation failed because a needed file could not be found.")
         print(f"Python error: {error}")
         return None
 
@@ -566,23 +1259,8 @@ def createHandshakeEarningsTracker(
         return None
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create a Handshake AI earnings tracker Excel workbook from a CSV export.")
-    parser.add_argument("--csv", default=None, help="Path to the CSV file. If omitted, the newest CSV in --output-folder is used.")
-    parser.add_argument("--output-folder", dest="outputFolder", default="Output", help="Folder that contains the CSV export.")
-    parser.add_argument("--project-name", dest="projectName", default="hedgehog - evals", help="Project name to put in the Excel file.")
-    parser.add_argument("--hourly-pay", dest="hourlyPay", type=float, required=True, help="Hourly pay rate for this project, for example 20 or 25.50.")
-    parser.add_argument("--output", default=None, help="Path for the Excel output file.")
-    args = parser.parse_args()
-
-    csvPath = resolveCsvPath(args.csv, args.outputFolder)
-    if not csvPath.exists():
-        raise FileNotFoundError(f"CSV file not found: {csvPath}")
-
-    outputPath = Path(args.output) if args.output else Path(args.outputFolder) / "HandshakeEarningTracker.xlsx"
-    tasks = readTasks(csvPath)
-    createWorkbook(tasks, args.projectName, args.hourlyPay, outputPath)
-    print(f"Created Excel tracker: {outputPath.resolve()}")
-    print(f"Tasks imported: {len(tasks)}")
+    print("haiExcelCreator.py is a helper module for creating or updating the Excel tracker.")
+    print("Run main.py instead so the scraper, CSV creator, and Excel creator work together.")
 
 
 if __name__ == "__main__":
