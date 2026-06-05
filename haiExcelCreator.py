@@ -185,6 +185,56 @@ def setColumnWidths(ws, widths: dict[str, float]) -> None:
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
+def addCleanEarningsChart(
+    ws,
+    title: str,
+    yAxisTitle: str,
+    xAxisTitle: str,
+    dataCol: int,
+    categoryCol: int,
+    headerRow: int,
+    firstDataRow: int,
+    lastDataRow: int,
+    anchorCell: str,
+    width: float = 18,
+    height: float = 9,
+) -> None:
+    if lastDataRow < firstDataRow:
+        return
+
+    chart = BarChart()
+    chart.type = "col"
+    chart.style = 10
+    chart.title = title
+    chart.y_axis.title = yAxisTitle
+
+    # Do not show "Week" or "Month" as a big axis title because it blocks the date labels.
+    chart.x_axis.title = None
+
+    chart.y_axis.numFmt = '$#,##0.00'
+    chart.height = height
+    chart.width = width
+    chart.gapWidth = 80
+    chart.overlap = 0
+    chart.legend = None
+
+    # Keep category/date labels visible under each bar.
+    chart.x_axis.delete = False
+    chart.x_axis.tickLblPos = "low"
+    chart.x_axis.majorTickMark = "none"
+    chart.x_axis.minorTickMark = "none"
+
+    # Removes the dark horizontal gridlines that made the chart look messy.
+    chart.y_axis.majorGridlines = None
+
+    data = Reference(ws, min_col=dataCol, min_row=headerRow, max_row=lastDataRow)
+    categories = Reference(ws, min_col=categoryCol, min_row=firstDataRow, max_row=lastDataRow)
+
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+
+    ws.add_chart(chart, anchorCell)
+
 
 def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, outputPath: Path) -> None:
     wb = Workbook()
@@ -411,17 +461,20 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         )
         wsSummary.add_table(weeklyTable)
 
-        weeklyChart = BarChart()
-        weeklyChart.title = "Weekly Earnings"
-        weeklyChart.y_axis.title = "Earnings"
-        weeklyChart.x_axis.title = "Week"
-        weeklyChart.height = 8
-        weeklyChart.width = 18
-        weeklyData = Reference(wsSummary, min_col=7, min_row=2, max_row=lastWeekRow)
-        weeklyCategories = Reference(wsSummary, min_col=3, min_row=3, max_row=lastWeekRow)
-        weeklyChart.add_data(weeklyData, titles_from_data=True)
-        weeklyChart.set_categories(weeklyCategories)
-        wsSummary.add_chart(weeklyChart, "I2")
+        addCleanEarningsChart(
+            ws=wsSummary,
+            title="Weekly Earnings",
+            yAxisTitle="Earnings",
+            xAxisTitle="Week",
+            dataCol=7,
+            categoryCol=3,
+            headerRow=2,
+            firstDataRow=3,
+            lastDataRow=lastWeekRow,
+            anchorCell="I3",
+            width=18,
+            height=9,
+        )
 
     wsSummary.freeze_panes = "A3"
     applyBasicSheetFormatting(wsSummary)
@@ -468,17 +521,20 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         )
         wsMonthly.add_table(monthlyTable)
 
-        monthlyChart = BarChart()
-        monthlyChart.title = "Monthly Earnings"
-        monthlyChart.y_axis.title = "Earnings"
-        monthlyChart.x_axis.title = "Month"
-        monthlyChart.height = 8
-        monthlyChart.width = 16
-        monthlyData = Reference(wsMonthly, min_col=5, min_row=2, max_row=lastMonthRow)
-        monthlyCategories = Reference(wsMonthly, min_col=1, min_row=3, max_row=lastMonthRow)
-        monthlyChart.add_data(monthlyData, titles_from_data=True)
-        monthlyChart.set_categories(monthlyCategories)
-        wsMonthly.add_chart(monthlyChart, "G2")
+        addCleanEarningsChart(
+            ws=wsMonthly,
+            title="Monthly Earnings",
+            yAxisTitle="Earnings",
+            xAxisTitle="Month",
+            dataCol=5,
+            categoryCol=1,
+            headerRow=2,
+            firstDataRow=3,
+            lastDataRow=lastMonthRow,
+            anchorCell="G3",
+            width=17,
+            height=9,
+        )
 
     wsMonthly.freeze_panes = "A3"
     applyBasicSheetFormatting(wsMonthly)
@@ -747,20 +803,20 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
         )
         wsSummary.add_table(weeklyTable)
 
-        weeklyChart = BarChart()
-        weeklyChart.title = "Weekly Earnings"
-        weeklyChart.y_axis.title = "Earnings"
-        weeklyChart.x_axis.title = "Week"
-        weeklyChart.height = 8
-        weeklyChart.width = 18
-
-        weeklyData = Reference(wsSummary, min_col=7, min_row=2, max_row=lastWeekRow)
-        weeklyCategories = Reference(wsSummary, min_col=3, min_row=3, max_row=lastWeekRow)
-
-        weeklyChart.add_data(weeklyData, titles_from_data=True)
-        weeklyChart.set_categories(weeklyCategories)
-
-        wsSummary.add_chart(weeklyChart, "I2")
+        addCleanEarningsChart(
+            ws=wsSummary,
+            title="Weekly Earnings",
+            yAxisTitle="Earnings",
+            xAxisTitle="Week",
+            dataCol=7,
+            categoryCol=3,
+            headerRow=2,
+            firstDataRow=3,
+            lastDataRow=lastWeekRow,
+            anchorCell="I3",
+            width=18,
+            height=9,
+        )
 
     wsSummary.freeze_panes = "A3"
     applyBasicSheetFormatting(wsSummary)
@@ -844,20 +900,20 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
         )
         wsMonthly.add_table(monthlyTable)
 
-        monthlyChart = BarChart()
-        monthlyChart.title = "Monthly Earnings"
-        monthlyChart.y_axis.title = "Earnings"
-        monthlyChart.x_axis.title = "Month"
-        monthlyChart.height = 8
-        monthlyChart.width = 16
-
-        monthlyData = Reference(wsMonthly, min_col=5, min_row=2, max_row=lastMonthRow)
-        monthlyCategories = Reference(wsMonthly, min_col=1, min_row=3, max_row=lastMonthRow)
-
-        monthlyChart.add_data(monthlyData, titles_from_data=True)
-        monthlyChart.set_categories(monthlyCategories)
-
-        wsMonthly.add_chart(monthlyChart, "G2")
+        addCleanEarningsChart(
+            ws=wsMonthly,
+            title="Monthly Earnings",
+            yAxisTitle="Earnings",
+            xAxisTitle="Month",
+            dataCol=5,
+            categoryCol=1,
+            headerRow=2,
+            firstDataRow=3,
+            lastDataRow=lastMonthRow,
+            anchorCell="G3",
+            width=17,
+            height=9,
+        )
 
     wsMonthly.freeze_panes = "A3"
     applyBasicSheetFormatting(wsMonthly)
