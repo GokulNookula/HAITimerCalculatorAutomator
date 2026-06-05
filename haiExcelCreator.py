@@ -185,6 +185,157 @@ def setColumnWidths(ws, widths: dict[str, float]) -> None:
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
+def parseHandshakeMoneyValue(value) -> float | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    import re
+
+    text = str(value).strip().replace("$", "").replace(",", "")
+
+    if not text:
+        return None
+
+    moneyMatch = re.search(r"-?\d+(?:\.\d+)?", text)
+    return float(moneyMatch.group()) if moneyMatch else None
+
+
+def parseHandshakePaidMinutesValue(value) -> float | None:
+    """Parses a Handshake paid-time value. Plain numbers are treated as minutes."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    import re
+
+    text = str(value).strip().lower()
+
+    if not text:
+        return None
+
+    if ":" in text:
+        return parseTotalTimeToMinutes(text)
+
+    numberMatch = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+
+    if not numberMatch:
+        return None
+
+    numberValue = float(numberMatch.group())
+
+    if "hour" in text or " hr" in text or text.endswith("hr") or text.endswith("hrs"):
+        return numberValue * 60
+
+    if "sec" in text:
+        return numberValue / 60
+
+    return numberValue
+
+
+def parseHandshakeDateRangeKey(value: str) -> tuple[date, date]:
+    import re
+
+    text = str(value).strip()
+    dateMatches = re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2}", text)
+
+    if len(dateMatches) < 2:
+        raise ValueError(f"Could not parse Handshake weekly date range: {value!r}")
+
+    return parseTaskDate(dateMatches[0]), parseTaskDate(dateMatches[1])
+
+
+def getFirstDictValue(source: dict, possibleKeys: list[str]):
+    for key in possibleKeys:
+        if key in source:
+            return source[key]
+    return None
+
+
+def normalizeHandshakeWeeklySummaryData(handshakeWeeklySummaryData: dict | None) -> dict[date, dict]:
+    """
+    Normalizes weekly Handshake summary data into this shape:
+    {
+        weekStartDate: {
+            "handshakePaidMinutes": 123.45,
+            "handshakeTotalEarnings": 67.89,
+            "projectName": "Project Hedgehog - Evals",
+        }
+    }
+    """
+    normalizedData = {}
+
+    if not handshakeWeeklySummaryData:
+        return normalizedData
+
+    for weekRangeText, summaryValue in handshakeWeeklySummaryData.items():
+        try:
+            weekStartDate, _ = parseHandshakeDateRangeKey(str(weekRangeText))
+        except ValueError:
+            continue
+
+        paidMinutesValue = None
+        totalEarningsValue = None
+        projectNameValue = None
+
+        if isinstance(summaryValue, dict):
+            paidMinutesValue = getFirstDictValue(
+                summaryValue,
+                [
+                    "Handshake Calculated Paid Minutes",
+                    "handshakeCalculatedPaidMinutes",
+                    "handshakePaidMinutes",
+                    "paidMinutes",
+                    "paidTime",
+                    "Paid time",
+                    "Paid Time",
+                ],
+            )
+            totalEarningsValue = getFirstDictValue(
+                summaryValue,
+                [
+                    "Handshake Total Earnings",
+                    "handshakeTotalEarnings",
+                    "actualPayFromHAI",
+                    "Actual Pay from HAI",
+                    "totalEarnings",
+                    "pay",
+                ],
+            )
+            projectNameValue = getFirstDictValue(
+                summaryValue,
+                ["Project Name", "projectName", "project"],
+            )
+
+        elif isinstance(summaryValue, (list, tuple)):
+            if len(summaryValue) >= 1:
+                paidMinutesValue = summaryValue[0]
+            if len(summaryValue) >= 2:
+                totalEarningsValue = summaryValue[1]
+            if len(summaryValue) >= 3:
+                projectNameValue = summaryValue[2]
+
+        else:
+            continue
+
+        normalizedData[weekStartMonday(weekStartDate)] = {
+            "handshakePaidMinutes": parseHandshakePaidMinutesValue(paidMinutesValue),
+            "handshakeTotalEarnings": parseHandshakeMoneyValue(totalEarningsValue),
+            "projectName": projectNameValue,
+        }
+
+    return normalizedData
+
+
+def getHandshakeWeekValue(handshakeWeeklyPayByWeek: dict[date, dict], weekStartDate: date, key: str):
+    weekData = handshakeWeeklyPayByWeek.get(weekStartDate, {})
+    value = weekData.get(key)
+    return "" if value is None else value
+
 def addCleanEarningsChart(
     ws,
     title: str,
@@ -235,8 +386,13 @@ def addCleanEarningsChart(
 
     ws.add_chart(chart, anchorCell)
 
-
-def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, outputPath: Path) -> None:
+def createWorkbook(
+    tasks: list[dict],
+    projectName: str,
+    hourlyPay: float,
+    outputPath: Path,
+    handshakeWeeklySummaryData: dict | None = None,
+) -> None:
     wb = Workbook()
     wsTasks = wb.active
     wsTasks.title = "Tasks"
@@ -245,22 +401,25 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     wsMonthly = wb.create_sheet("Monthly Summary")
     wsSettings = wb.create_sheet("Settings")
 
+    handshakeWeeklyPayByWeek = normalizeHandshakeWeeklySummaryData(handshakeWeeklySummaryData)
+
     # Settings sheet
     styleTitle(wsSettings, "Project Settings", 3)
     wsSettings.append(["Setting", "Value", "Notes"])
     wsSettings.append(["Project Name", projectName, "Change this if the project name changes."])
-    wsSettings.append(["Hourly Pay Rate", hourlyPay, "Used to calculate earnings."])
+    wsSettings.append(["Hourly Pay Rate", hourlyPay, "Used to calculate expected earnings."])
     wsSettings.append([
         "Paid Time Rule",
-        "MIN(actual minutes, task cap minutes)",
-        "If Handshake pays the full cap no matter what, change Tasks column H formula from MIN(F,G) to G.",
+        "MIN(actual minutes, task cap minutes from Task Types)",
+        "Paid Minutes is calculated from Actual Minutes and the cap lookup in Task Types. The Time Cap Minutes helper column is no longer generated on the Tasks sheet.",
     ])
     styleHeaderRow(wsSettings, 2, 1, 3)
     wsSettings["B4"].number_format = '$#,##0.00'
-    setColumnWidths(wsSettings, {"A": 20, "B": 35, "C": 80})
+    setColumnWidths(wsSettings, {"A": 20, "B": 35, "C": 100})
     applyBasicSheetFormatting(wsSettings)
 
     # Task Types sheet
+    # This sheet still keeps Time Cap Minutes because the Tasks sheet Paid Minutes formula needs a lookup source.
     styleTitle(wsTaskTypes, "Approved Task Types and Time Caps", 3)
     wsTaskTypes.append(["Task Type", "Time Cap Minutes", "Notes"])
     for taskType in approvedTaskTypes:
@@ -279,7 +438,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         "System",
     )
     wsTaskTypes["B2"].comment = Comment(
-        "Max paid minutes for each approved task type. Changing this updates the Tasks sheet earnings formulas.",
+        "Max paid minutes for each approved task type. Changing this updates the Tasks sheet Paid Minutes formulas.",
         "System",
     )
 
@@ -306,7 +465,6 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         "Type of Task",
         "Earning",
         "Actual Minutes",
-        "Time Cap Minutes",
         "Paid Minutes",
         "Week Start",
         "Week End",
@@ -326,26 +484,22 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
                 None,
                 task["actualMinutes"],
                 None,
-                None,
                 task["weekStart"],
                 task["weekEnd"],
                 None,
             ]
         )
-        wsTasks.cell(row=rowNum, column=5).value = (
-            f'=IF(OR($H{rowNum}="",\'Settings\'!$B$4=""),"",$H{rowNum}/60*\'Settings\'!$B$4)'
-        )
+
         timeCapLookupFormula = f'VLOOKUP($D{rowNum},\'Task Types\'!$A$3:$B$1000,2,FALSE)'
 
+        wsTasks.cell(row=rowNum, column=5).value = (
+            f'=IF(OR($G{rowNum}="",\'Settings\'!$B$4=""),"",$G{rowNum}/60*\'Settings\'!$B$4)'
+        )
         wsTasks.cell(row=rowNum, column=7).value = (
-            f'=IF($D{rowNum}="","",'
-            f'IFERROR(IF({timeCapLookupFormula}=0,"",{timeCapLookupFormula}),""))'
+            f'=IF(OR($F{rowNum}="",$D{rowNum}=""),"",'
+            f'IFERROR(IF({timeCapLookupFormula}=0,"",MIN($F{rowNum},{timeCapLookupFormula})),""))'
         )
-
-        wsTasks.cell(row=rowNum, column=8).value = (
-            f'=IF(OR($F{rowNum}="",$G{rowNum}=""),"",MIN($F{rowNum},$G{rowNum}))'
-        )
-        wsTasks.cell(row=rowNum, column=11).value = "='Settings'!$B$3"
+        wsTasks.cell(row=rowNum, column=10).value = "='Settings'!$B$3"
 
     lastTaskRow = max(wsTasks.max_row, 2)
     wsTasks.freeze_panes = "A2"
@@ -358,11 +512,10 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
             "D": 62,
             "E": 14,
             "F": 16,
-            "G": 18,
-            "H": 16,
+            "G": 16,
+            "H": 14,
             "I": 14,
-            "J": 14,
-            "K": 22,
+            "J": 22,
         },
     )
 
@@ -371,9 +524,8 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         wsTasks.cell(row=row, column=5).number_format = '$#,##0.00'
         wsTasks.cell(row=row, column=6).number_format = "0.00"
         wsTasks.cell(row=row, column=7).number_format = "0.00"
-        wsTasks.cell(row=row, column=8).number_format = "0.00"
+        wsTasks.cell(row=row, column=8).number_format = "m/d/yyyy"
         wsTasks.cell(row=row, column=9).number_format = "m/d/yyyy"
-        wsTasks.cell(row=row, column=10).number_format = "m/d/yyyy"
 
     taskDropdown = DataValidation(
         type="list",
@@ -381,7 +533,6 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         allow_blank=True,
         showDropDown=False,
     )
-    # The dropdown gives approved choices. If you need another type, add it manually in Task Types columns A:B.
     taskDropdown.showErrorMessage = False
     taskDropdown.error = "Choose an approved task type from the dropdown. To add a new one, add it manually in Task Types columns A:B."
     taskDropdown.errorTitle = "Task type"
@@ -391,7 +542,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     taskDropdown.add(f"D2:D{max(lastTaskRow + 500, 1000)}")
 
     if lastTaskRow >= 2:
-        tasksTable = Table(displayName="TasksTable", ref=f"A1:K{lastTaskRow}")
+        tasksTable = Table(displayName="TasksTable", ref=f"A1:J{lastTaskRow}")
         tasksTable.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium9",
             showFirstColumn=False,
@@ -406,7 +557,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         "System",
     )
     wsTasks["E1"].comment = Comment(
-        "Earning = paid minutes / 60 * hourly pay rate. Paid minutes uses the smaller of actual minutes and the task time cap.",
+        "Earning = paid minutes / 60 * hourly pay rate. Paid minutes uses the smaller of actual minutes and the cap lookup from Task Types.",
         "System",
     )
 
@@ -417,7 +568,7 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     )
 
     # Weekly Summary sheet
-    styleTitle(wsSummary, "Weekly Earnings Summary", 7)
+    styleTitle(wsSummary, "Weekly Earnings Summary", 9)
     weeklyHeaders = [
         "Week Start",
         "Week End",
@@ -425,7 +576,9 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         "Total Tasks",
         "Actual Minutes",
         "Paid Minutes",
-        "Total Earnings",
+        "Handshake Calculated Paid Minutes",
+        "Expected Total Earnings",
+        "Handshake Total Earnings",
     ]
     wsSummary.append(weeklyHeaders)
     styleHeaderRow(wsSummary, 2, 1, len(weeklyHeaders))
@@ -434,24 +587,52 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     for weekStart in uniqueWeeks:
         rowNum = wsSummary.max_row + 1
         weekEnd = weekStart + timedelta(days=6)
-        wsSummary.append([weekStart, weekEnd, None, None, None, None, None])
+        wsSummary.append(
+            [
+                weekStart,
+                weekEnd,
+                None,
+                None,
+                None,
+                None,
+                getHandshakeWeekValue(handshakeWeeklyPayByWeek, weekStart, "handshakePaidMinutes"),
+                None,
+                getHandshakeWeekValue(handshakeWeeklyPayByWeek, weekStart, "handshakeTotalEarnings"),
+            ]
+        )
         wsSummary.cell(row=rowNum, column=3).value = f'=TEXT(A{rowNum},"m/d/yyyy")&" - "&TEXT(B{rowNum},"m/d/yyyy")'
-        wsSummary.cell(row=rowNum, column=4).value = f'=COUNTIFS(Tasks!$I:$I,$A{rowNum})'
-        wsSummary.cell(row=rowNum, column=5).value = f'=SUMIFS(Tasks!$F:$F,Tasks!$I:$I,$A{rowNum})'
-        wsSummary.cell(row=rowNum, column=6).value = f'=SUMIFS(Tasks!$H:$H,Tasks!$I:$I,$A{rowNum})'
-        wsSummary.cell(row=rowNum, column=7).value = f'=SUMIFS(Tasks!$E:$E,Tasks!$I:$I,$A{rowNum})'
+        wsSummary.cell(row=rowNum, column=4).value = f'=COUNTIFS(Tasks!$H:$H,$A{rowNum})'
+        wsSummary.cell(row=rowNum, column=5).value = f'=SUMIFS(Tasks!$F:$F,Tasks!$H:$H,$A{rowNum})'
+        wsSummary.cell(row=rowNum, column=6).value = f'=SUMIFS(Tasks!$G:$G,Tasks!$H:$H,$A{rowNum})'
+        wsSummary.cell(row=rowNum, column=8).value = f'=SUMIFS(Tasks!$E:$E,Tasks!$H:$H,$A{rowNum})'
 
     lastWeekRow = max(wsSummary.max_row, 3)
-    setColumnWidths(wsSummary, {"A": 14, "B": 14, "C": 28, "D": 12, "E": 16, "F": 14, "G": 16, "I": 22})
+    setColumnWidths(
+        wsSummary,
+        {
+            "A": 14,
+            "B": 14,
+            "C": 28,
+            "D": 12,
+            "E": 16,
+            "F": 14,
+            "G": 30,
+            "H": 22,
+            "I": 22,
+            "K": 22,
+        },
+    )
     for row in range(3, lastWeekRow + 1):
         wsSummary.cell(row=row, column=1).number_format = "m/d/yyyy"
         wsSummary.cell(row=row, column=2).number_format = "m/d/yyyy"
         wsSummary.cell(row=row, column=5).number_format = "0.00"
         wsSummary.cell(row=row, column=6).number_format = "0.00"
-        wsSummary.cell(row=row, column=7).number_format = '$#,##0.00'
+        wsSummary.cell(row=row, column=7).number_format = "0.00"
+        wsSummary.cell(row=row, column=8).number_format = '$#,##0.00'
+        wsSummary.cell(row=row, column=9).number_format = '$#,##0.00'
 
     if len(uniqueWeeks) >= 1:
-        weeklyTable = Table(displayName="WeeklySummaryTable", ref=f"A2:G{lastWeekRow}")
+        weeklyTable = Table(displayName="WeeklySummaryTable", ref=f"A2:I{lastWeekRow}")
         weeklyTable.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium4",
             showFirstColumn=False,
@@ -466,12 +647,12 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
             title="Weekly Earnings",
             yAxisTitle="Earnings",
             xAxisTitle="Week",
-            dataCol=7,
+            dataCol=8,
             categoryCol=3,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastWeekRow,
-            anchorCell="I3",
+            anchorCell="K3",
             width=18,
             height=9,
         )
@@ -480,15 +661,23 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     applyBasicSheetFormatting(wsSummary)
 
     # Monthly Summary sheet
-    styleTitle(wsMonthly, "Monthly Earnings Summary", 5)
-    monthlyHeaders = ["Month", "Total Tasks", "Actual Minutes", "Paid Minutes", "Total Earnings"]
+    styleTitle(wsMonthly, "Monthly Earnings Summary", 7)
+    monthlyHeaders = [
+        "Month",
+        "Total Tasks",
+        "Actual Minutes",
+        "Paid Minutes",
+        "Handshake Calculated Paid Minutes",
+        "Expected Total Earnings",
+        "Handshake Total Earnings",
+    ]
     wsMonthly.append(monthlyHeaders)
     styleHeaderRow(wsMonthly, 2, 1, len(monthlyHeaders))
 
     uniqueMonths = sorted({task["monthStart"] for task in tasks})
     for monthStart in uniqueMonths:
         rowNum = wsMonthly.max_row + 1
-        wsMonthly.append([monthStart, None, None, None, None])
+        wsMonthly.append([monthStart, None, None, None, None, None, None])
         wsMonthly.cell(row=rowNum, column=2).value = (
             f'=COUNTIFS(Tasks!$B:$B,">="&$A{rowNum},Tasks!$B:$B,"<"&EDATE($A{rowNum},1))'
         )
@@ -496,22 +685,38 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
             f'=SUMIFS(Tasks!$F:$F,Tasks!$B:$B,">="&$A{rowNum},Tasks!$B:$B,"<"&EDATE($A{rowNum},1))'
         )
         wsMonthly.cell(row=rowNum, column=4).value = (
-            f'=SUMIFS(Tasks!$H:$H,Tasks!$B:$B,">="&$A{rowNum},Tasks!$B:$B,"<"&EDATE($A{rowNum},1))'
+            f'=SUMIFS(Tasks!$G:$G,Tasks!$B:$B,">="&$A{rowNum},Tasks!$B:$B,"<"&EDATE($A{rowNum},1))'
         )
         wsMonthly.cell(row=rowNum, column=5).value = (
+            f'=IF(COUNTIFS(\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1),'
+            f'\'Weekly Summary\'!$G:$G,"<>")=0,"",'
+            f'SUMIFS(\'Weekly Summary\'!$G:$G,\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1)))'
+        )
+        wsMonthly.cell(row=rowNum, column=6).value = (
             f'=SUMIFS(Tasks!$E:$E,Tasks!$B:$B,">="&$A{rowNum},Tasks!$B:$B,"<"&EDATE($A{rowNum},1))'
+        )
+        wsMonthly.cell(row=rowNum, column=7).value = (
+            f'=IF(COUNTIFS(\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1),'
+            f'\'Weekly Summary\'!$I:$I,"<>")=0,"",'
+            f'SUMIFS(\'Weekly Summary\'!$I:$I,\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1)))'
         )
 
     lastMonthRow = max(wsMonthly.max_row, 3)
-    setColumnWidths(wsMonthly, {"A": 16, "B": 12, "C": 16, "D": 14, "E": 16, "G": 22})
+    setColumnWidths(wsMonthly, {"A": 16, "B": 12, "C": 16, "D": 14, "E": 30, "F": 22, "G": 22, "I": 22})
     for row in range(3, lastMonthRow + 1):
         wsMonthly.cell(row=row, column=1).number_format = "mmm yyyy"
         wsMonthly.cell(row=row, column=3).number_format = "0.00"
         wsMonthly.cell(row=row, column=4).number_format = "0.00"
-        wsMonthly.cell(row=row, column=5).number_format = '$#,##0.00'
+        wsMonthly.cell(row=row, column=5).number_format = "0.00"
+        wsMonthly.cell(row=row, column=6).number_format = '$#,##0.00'
+        wsMonthly.cell(row=row, column=7).number_format = '$#,##0.00'
 
     if len(uniqueMonths) >= 1:
-        monthlyTable = Table(displayName="MonthlySummaryTable", ref=f"A2:E{lastMonthRow}")
+        monthlyTable = Table(displayName="MonthlySummaryTable", ref=f"A2:G{lastMonthRow}")
         monthlyTable.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium4",
             showFirstColumn=False,
@@ -526,12 +731,12 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
             title="Monthly Earnings",
             yAxisTitle="Earnings",
             xAxisTitle="Month",
-            dataCol=5,
+            dataCol=6,
             categoryCol=1,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastMonthRow,
-            anchorCell="G3",
+            anchorCell="I3",
             width=17,
             height=9,
         )
@@ -544,8 +749,6 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
 
     outputPath.parent.mkdir(parents=True, exist_ok=True)
     wb.save(outputPath)
-
-
 
 def extractHourlyPayValue(value: str) -> float:
     """Extracts a numeric hourly pay value from strings like '$17' or '$17/hr'."""
@@ -627,6 +830,17 @@ def getHeaderMap(ws) -> dict[str, int]:
             headerMap[headerName] = cell.column
 
     return headerMap
+
+def removeTimeCapMinutesColumnIfExists(workbook) -> None:
+    if "Tasks" not in workbook.sheetnames:
+        return
+
+    wsTasks = workbook["Tasks"]
+    headerMap = getHeaderMap(wsTasks)
+    timeCapCol = headerMap.get("Time Cap Minutes")
+
+    if timeCapCol is not None:
+        wsTasks.delete_cols(timeCapCol)
 
 
 def getExistingTaskIds(wsTasks, taskIdCol: int) -> set[str]:
@@ -720,11 +934,17 @@ def collectSummaryPeriodsFromTasks(wsTasks, headerMap: dict[str, int]) -> tuple[
     return sorted(weekStartDates), sorted(monthStartDates)
 
 
-def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: dict[str, int]) -> None:
+def refreshWeeklySummarySheet(
+    workbook,
+    weekStartDates: list[date],
+    headerMap: dict[str, int],
+    handshakeWeeklyPayByWeek: dict[date, dict] | None = None,
+) -> None:
     insertIndex = getSummaryInsertIndex(workbook)
     wsSummary = workbook.create_sheet("Weekly Summary", insertIndex)
+    handshakeWeeklyPayByWeek = handshakeWeeklyPayByWeek or {}
 
-    styleTitle(wsSummary, "Weekly Earnings Summary", 7)
+    styleTitle(wsSummary, "Weekly Earnings Summary", 9)
 
     weeklyHeaders = [
         "Week Start",
@@ -733,7 +953,9 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
         "Total Tasks",
         "Actual Minutes",
         "Paid Minutes",
-        "Total Earnings",
+        "Handshake Calculated Paid Minutes",
+        "Expected Total Earnings",
+        "Handshake Total Earnings",
     ]
 
     wsSummary.append(weeklyHeaders)
@@ -748,7 +970,19 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
         rowNum = wsSummary.max_row + 1
         weekEndDate = weekStartDate + timedelta(days=6)
 
-        wsSummary.append([weekStartDate, weekEndDate, None, None, None, None, None])
+        wsSummary.append(
+            [
+                weekStartDate,
+                weekEndDate,
+                None,
+                None,
+                None,
+                None,
+                getHandshakeWeekValue(handshakeWeeklyPayByWeek, weekStartDate, "handshakePaidMinutes"),
+                None,
+                getHandshakeWeekValue(handshakeWeeklyPayByWeek, weekStartDate, "handshakeTotalEarnings"),
+            ]
+        )
 
         wsSummary.cell(row=rowNum, column=3).value = (
             f'=TEXT(A{rowNum},"m/d/yyyy")&" - "&TEXT(B{rowNum},"m/d/yyyy")'
@@ -764,7 +998,7 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
             f'=SUMIFS(Tasks!${paidMinutesColLetter}:${paidMinutesColLetter},'
             f'Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
         )
-        wsSummary.cell(row=rowNum, column=7).value = (
+        wsSummary.cell(row=rowNum, column=8).value = (
             f'=SUMIFS(Tasks!${earningColLetter}:${earningColLetter},'
             f'Tasks!${weekStartColLetter}:${weekStartColLetter},$A{rowNum})'
         )
@@ -780,8 +1014,10 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
             "D": 12,
             "E": 16,
             "F": 14,
-            "G": 16,
+            "G": 30,
+            "H": 22,
             "I": 22,
+            "K": 22,
         },
     )
 
@@ -790,10 +1026,12 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
         wsSummary.cell(row=rowNum, column=2).number_format = "m/d/yyyy"
         wsSummary.cell(row=rowNum, column=5).number_format = "0.00"
         wsSummary.cell(row=rowNum, column=6).number_format = "0.00"
-        wsSummary.cell(row=rowNum, column=7).number_format = '$#,##0.00'
+        wsSummary.cell(row=rowNum, column=7).number_format = "0.00"
+        wsSummary.cell(row=rowNum, column=8).number_format = '$#,##0.00'
+        wsSummary.cell(row=rowNum, column=9).number_format = '$#,##0.00'
 
     if weekStartDates:
-        weeklyTable = Table(displayName="WeeklySummaryTable", ref=f"A2:G{lastWeekRow}")
+        weeklyTable = Table(displayName="WeeklySummaryTable", ref=f"A2:I{lastWeekRow}")
         weeklyTable.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium4",
             showFirstColumn=False,
@@ -808,12 +1046,12 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
             title="Weekly Earnings",
             yAxisTitle="Earnings",
             xAxisTitle="Week",
-            dataCol=7,
+            dataCol=8,
             categoryCol=3,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastWeekRow,
-            anchorCell="I3",
+            anchorCell="K3",
             width=18,
             height=9,
         )
@@ -821,19 +1059,20 @@ def refreshWeeklySummarySheet(workbook, weekStartDates: list[date], headerMap: d
     wsSummary.freeze_panes = "A3"
     applyBasicSheetFormatting(wsSummary)
 
-
 def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap: dict[str, int]) -> None:
     insertIndex = getSummaryInsertIndex(workbook)
     wsMonthly = workbook.create_sheet("Monthly Summary", insertIndex)
 
-    styleTitle(wsMonthly, "Monthly Earnings Summary", 5)
+    styleTitle(wsMonthly, "Monthly Earnings Summary", 7)
 
     monthlyHeaders = [
         "Month",
         "Total Tasks",
         "Actual Minutes",
         "Paid Minutes",
-        "Total Earnings",
+        "Handshake Calculated Paid Minutes",
+        "Expected Total Earnings",
+        "Handshake Total Earnings",
     ]
 
     wsMonthly.append(monthlyHeaders)
@@ -847,7 +1086,7 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
     for monthStartDate in monthStartDates:
         rowNum = wsMonthly.max_row + 1
 
-        wsMonthly.append([monthStartDate, None, None, None, None])
+        wsMonthly.append([monthStartDate, None, None, None, None, None, None])
 
         wsMonthly.cell(row=rowNum, column=2).value = (
             f'=COUNTIFS(Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
@@ -864,9 +1103,23 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
             f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
         )
         wsMonthly.cell(row=rowNum, column=5).value = (
+            f'=IF(COUNTIFS(\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1),'
+            f'\'Weekly Summary\'!$G:$G,"<>")=0,"",'
+            f'SUMIFS(\'Weekly Summary\'!$G:$G,\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1)))'
+        )
+        wsMonthly.cell(row=rowNum, column=6).value = (
             f'=SUMIFS(Tasks!${earningColLetter}:${earningColLetter},'
             f'Tasks!${dateColLetter}:${dateColLetter},">="&$A{rowNum},'
             f'Tasks!${dateColLetter}:${dateColLetter},"<"&EDATE($A{rowNum},1))'
+        )
+        wsMonthly.cell(row=rowNum, column=7).value = (
+            f'=IF(COUNTIFS(\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1),'
+            f'\'Weekly Summary\'!$I:$I,"<>")=0,"",'
+            f'SUMIFS(\'Weekly Summary\'!$I:$I,\'Weekly Summary\'!$A:$A,">="&$A{rowNum},'
+            f'\'Weekly Summary\'!$A:$A,"<"&EDATE($A{rowNum},1)))'
         )
 
     lastMonthRow = max(wsMonthly.max_row, 3)
@@ -878,8 +1131,10 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
             "B": 12,
             "C": 16,
             "D": 14,
-            "E": 16,
+            "E": 30,
+            "F": 22,
             "G": 22,
+            "I": 22,
         },
     )
 
@@ -887,10 +1142,12 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
         wsMonthly.cell(row=rowNum, column=1).number_format = "mmm yyyy"
         wsMonthly.cell(row=rowNum, column=3).number_format = "0.00"
         wsMonthly.cell(row=rowNum, column=4).number_format = "0.00"
-        wsMonthly.cell(row=rowNum, column=5).number_format = '$#,##0.00'
+        wsMonthly.cell(row=rowNum, column=5).number_format = "0.00"
+        wsMonthly.cell(row=rowNum, column=6).number_format = '$#,##0.00'
+        wsMonthly.cell(row=rowNum, column=7).number_format = '$#,##0.00'
 
     if monthStartDates:
-        monthlyTable = Table(displayName="MonthlySummaryTable", ref=f"A2:E{lastMonthRow}")
+        monthlyTable = Table(displayName="MonthlySummaryTable", ref=f"A2:G{lastMonthRow}")
         monthlyTable.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium4",
             showFirstColumn=False,
@@ -905,12 +1162,12 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
             title="Monthly Earnings",
             yAxisTitle="Earnings",
             xAxisTitle="Month",
-            dataCol=5,
+            dataCol=6,
             categoryCol=1,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastMonthRow,
-            anchorCell="G3",
+            anchorCell="I3",
             width=17,
             height=9,
         )
@@ -918,8 +1175,7 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
     wsMonthly.freeze_panes = "A3"
     applyBasicSheetFormatting(wsMonthly)
 
-
-def refreshSummarySheets(workbook) -> None:
+def refreshSummarySheets(workbook, handshakeWeeklySummaryData: dict | None = None) -> None:
     if "Tasks" not in workbook.sheetnames:
         return
 
@@ -944,11 +1200,12 @@ def refreshSummarySheets(workbook) -> None:
         )
 
     weekStartDates, monthStartDates = collectSummaryPeriodsFromTasks(wsTasks, headerMap)
+    handshakeWeeklyPayByWeek = normalizeHandshakeWeeklySummaryData(handshakeWeeklySummaryData)
 
     removeWorksheetIfExists(workbook, "Weekly Summary")
     removeWorksheetIfExists(workbook, "Monthly Summary")
 
-    refreshWeeklySummarySheet(workbook, weekStartDates, headerMap)
+    refreshWeeklySummarySheet(workbook, weekStartDates, headerMap, handshakeWeeklyPayByWeek)
     refreshMonthlySummarySheet(workbook, monthStartDates, headerMap)
 
     if "Tasks" in workbook.sheetnames:
@@ -1006,7 +1263,6 @@ def parseExcelDateTimeValue(value) -> datetime:
 
     return datetime.min
 
-
 def rebuildTaskRowFormulas(wsTasks, rowNum: int, headerMap: dict[str, int]) -> None:
     earningCol = headerMap["Earning"]
     actualMinutesCol = headerMap["Actual Minutes"]
@@ -1023,39 +1279,18 @@ def rebuildTaskRowFormulas(wsTasks, rowNum: int, headerMap: dict[str, int]) -> N
         f'${paidMinutesColLetter}{rowNum}/60*\'Settings\'!$B$4)'
     )
 
-    timeCapCol = headerMap.get("Time Cap Minutes")
+    timeCapLookupFormula = (
+        f'VLOOKUP(${taskTypeColLetter}{rowNum},'
+        f'\'Task Types\'!$A$3:$B$1000,2,FALSE)'
+    )
 
-    if timeCapCol is not None:
-        timeCapColLetter = get_column_letter(timeCapCol)
-
-        timeCapLookupFormula = (
-            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
-            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)'
-        )
-
-        wsTasks.cell(row=rowNum, column=timeCapCol).value = (
-            f'=IF(${taskTypeColLetter}{rowNum}="","",'
-            f'IFERROR(IF({timeCapLookupFormula}=0,"",{timeCapLookupFormula}),""))'
-        )
-
-        wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
-            f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${timeCapColLetter}{rowNum}=""),"",'
-            f'MIN(${actualMinutesColLetter}{rowNum},${timeCapColLetter}{rowNum}))'
-        )
-    else:
-        timeCapLookupFormula = (
-            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
-            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)'
-        )
-
-        wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
-            f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${taskTypeColLetter}{rowNum}=""),"",'
-            f'IFERROR(IF({timeCapLookupFormula}=0,"",'
-            f'MIN(${actualMinutesColLetter}{rowNum},{timeCapLookupFormula})),""))'
-        )
+    wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
+        f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${taskTypeColLetter}{rowNum}=""),"",'
+        f'IFERROR(IF({timeCapLookupFormula}=0,"",'
+        f'MIN(${actualMinutesColLetter}{rowNum},{timeCapLookupFormula})),""))'
+    )
 
     wsTasks.cell(row=rowNum, column=projectCol).value = "='Settings'!$B$3"
-
 
 def sortTasksSheetByDate(wsTasks, headerMap: dict[str, int], newestFirst: bool = True) -> int:
     taskIdCol = headerMap["Task ID"]
@@ -1265,6 +1500,7 @@ def appendMissingTasksToExistingWorkbook(
     hourlyPay: float,
     existingWorkbookPath: Path,
     outputPath: Path,
+    handshakeWeeklySummaryData: dict | None = None,
 ) -> Path:
     if not existingWorkbookPath.exists():
         raise FileNotFoundError(f"Existing Excel tracker was not found: {existingWorkbookPath}")
@@ -1280,6 +1516,9 @@ def appendMissingTasksToExistingWorkbook(
 
     if "Tasks" not in workbook.sheetnames:
         raise ValueError(f"Existing workbook does not have a Tasks sheet: {existingWorkbookPath}")
+
+    # Removes the old Time Cap Minutes column from existing trackers too.
+    removeTimeCapMinutesColumnIfExists(workbook)
 
     wsTasks = workbook["Tasks"]
     headerMap = getHeaderMap(wsTasks)
@@ -1316,7 +1555,6 @@ def appendMissingTasksToExistingWorkbook(
     earningCol = headerMap["Earning"]
     paidMinutesCol = headerMap["Paid Minutes"]
     projectCol = headerMap["Project"]
-    timeCapCol = headerMap.get("Time Cap Minutes")
 
     existingTaskIds = getExistingTaskIds(wsTasks, taskIdCol)
     addedTaskCount = 0
@@ -1345,10 +1583,6 @@ def appendMissingTasksToExistingWorkbook(
         wsTasks.cell(row=rowNum, column=paidMinutesCol).number_format = "0.00"
         wsTasks.cell(row=rowNum, column=weekStartCol).number_format = "m/d/yyyy"
         wsTasks.cell(row=rowNum, column=weekEndCol).number_format = "m/d/yyyy"
-
-        if timeCapCol is not None:
-            wsTasks.cell(row=rowNum, column=timeCapCol).number_format = "0.00"
-
         wsTasks.cell(row=rowNum, column=projectCol).number_format = "General"
 
         existingTaskIds.add(taskId)
@@ -1359,7 +1593,7 @@ def appendMissingTasksToExistingWorkbook(
 
     updateTasksTableRange(wsTasks, lastTaskRow=lastTaskRow)
     refreshTaskTypeDropdownRange(wsTasks, headerMap)
-    refreshSummarySheets(workbook)
+    refreshSummarySheets(workbook, handshakeWeeklySummaryData=handshakeWeeklySummaryData)
 
     if "Settings" in workbook.sheetnames:
         wsSettings = workbook["Settings"]
@@ -1388,6 +1622,7 @@ def createHandshakeEarningsTracker(
     hourlyPay: float | None = None,
     existingWorkbookPath: str | Path | None = None,
     outputPath: str | Path | None = None,
+    handshakeWeeklySummaryData: dict | None = None,
 ) -> Path | None:
     """Creates a new tracker or updates a copied existing tracker with missing CSV task IDs only."""
     try:
@@ -1417,9 +1652,16 @@ def createHandshakeEarningsTracker(
                 hourlyPay=float(hourlyPay),
                 existingWorkbookPath=resolvedExistingWorkbookPath,
                 outputPath=finalOutputPath,
+                handshakeWeeklySummaryData=handshakeWeeklySummaryData,
             )
 
-        createWorkbook(tasks, projectName, float(hourlyPay), finalOutputPath)
+        createWorkbook(
+            tasks,
+            projectName,
+            float(hourlyPay),
+            finalOutputPath,
+            handshakeWeeklySummaryData=handshakeWeeklySummaryData,
+        )
 
         print(f"Created Excel tracker: {finalOutputPath.resolve()}")
         print(f"Tasks imported into Excel: {len(tasks)}")
