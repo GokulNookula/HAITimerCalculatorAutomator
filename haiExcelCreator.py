@@ -226,11 +226,11 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
     applyBasicSheetFormatting(wsTaskTypes)
     wsTaskTypes["A2"].comment = Comment(
         "Approved task types. You can edit names or add more manually below the existing list.",
-        "ChatGPT",
+        "System",
     )
     wsTaskTypes["B2"].comment = Comment(
         "Max paid minutes for each approved task type. Changing this updates the Tasks sheet earnings formulas.",
-        "ChatGPT",
+        "System",
     )
 
     if len(approvedTaskTypes) >= 1:
@@ -353,11 +353,11 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
 
     wsTasks["D1"].comment = Comment(
         "Dropdown comes from Task Types!A3:A1000. To add a new task type, add it manually in Task Types columns A:B, then select or type it here.",
-        "ChatGPT",
+        "System",
     )
     wsTasks["E1"].comment = Comment(
         "Earning = paid minutes / 60 * hourly pay rate. Paid minutes uses the smaller of actual minutes and the task time cap.",
-        "ChatGPT",
+        "System",
     )
 
     applyBasicSheetFormatting(wsTasks)
@@ -1384,11 +1384,3 @@ def createHandshakeEarningsTracker(
         print("Excel creation failed because of an unexpected error.")
         print(f"Python error: {error}")
         return None
-
-def main() -> None:
-    print("haiExcelCreator.py is a helper module for creating or updating the Excel tracker.")
-    print("Run main.py instead so the scraper, CSV creator, and Excel creator work together.")
-
-
-if __name__ == "__main__":
-    main()
