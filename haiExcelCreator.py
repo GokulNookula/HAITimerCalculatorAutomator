@@ -38,7 +38,7 @@ defaultTimeCapsMin = {
     "260310-live-s2s-elo": 45,
     "260403-omni-multiturn-elo": 20,
     "vs-1776345130-video-audio-caption-comparison-robinsr-v2-apr16": 20,
-    "find-the-boundary-v2":None,
+    "find-the-boundary-v2": 25,
 }
 
 approvedTaskTypes = list(defaultTimeCapsMin.keys())
@@ -1133,27 +1133,65 @@ def updateTaskTypesTableRange(workbook) -> None:
             return
 
 
+def getExistingTaskTypeRowMap(wsTaskTypes) -> dict[str, int]:
+    existingTaskTypeRowMap = {}
+
+    for rowNum in range(3, wsTaskTypes.max_row + 1):
+        taskTypeValue = wsTaskTypes.cell(row=rowNum, column=1).value
+
+        if taskTypeValue is None:
+            continue
+
+        taskTypeName = str(taskTypeValue).strip()
+
+        if taskTypeName:
+            existingTaskTypeRowMap[taskTypeName] = rowNum
+
+    return existingTaskTypeRowMap
+
+
 def syncDefaultTaskTypesIntoWorkbook(workbook) -> None:
     """
-    Keeps task types that the user manually added in the existing workbook,
-    and also appends any new task types from defaultTimeCapsMin that are missing.
-    Unknown caps can be None and will stay blank in Excel.
+    Keeps the input workbook's Task Types as the source of truth.
+
+    Rules:
+    1. If the task type already exists in the input workbook, keep its current cap.
+       Example: if input workbook has find-the-boundary-v2 = 20,
+       and defaultTimeCapsMin has find-the-boundary-v2 = None, the 20 stays.
+    2. If the task type exists but its cap is blank, and defaultTimeCapsMin has a known cap,
+       fill the blank cap.
+    3. If the task type does not exist, append it.
+    4. If defaultTimeCapsMin has None, append the task name but leave the cap blank.
     """
     if "Task Types" not in workbook.sheetnames:
         return
 
     wsTaskTypes = workbook["Task Types"]
-    existingTaskTypes = getExistingTaskTypeNames(wsTaskTypes)
+    existingTaskTypeRowMap = getExistingTaskTypeRowMap(wsTaskTypes)
     nextRow = getLastTaskTypeRow(wsTaskTypes) + 1
 
-    for taskType, timeCapMinutes in defaultTimeCapsMin.items():
+    for taskType, defaultTimeCapMinutes in defaultTimeCapsMin.items():
         taskTypeName = str(taskType).strip()
 
-        if not taskTypeName or taskTypeName in existingTaskTypes:
+        if not taskTypeName:
+            continue
+
+        if taskTypeName in existingTaskTypeRowMap:
+            existingRow = existingTaskTypeRowMap[taskTypeName]
+            existingCapCell = wsTaskTypes.cell(row=existingRow, column=2)
+            existingCapValue = existingCapCell.value
+
+            existingCapIsBlank = existingCapValue is None or str(existingCapValue).strip() == ""
+
+            if existingCapIsBlank and defaultTimeCapMinutes is not None:
+                existingCapCell.value = defaultTimeCapMinutes
+
             continue
 
         wsTaskTypes.cell(row=nextRow, column=1).value = taskTypeName
-        wsTaskTypes.cell(row=nextRow, column=2).value = timeCapMinutes if timeCapMinutes is not None else None
+        wsTaskTypes.cell(row=nextRow, column=2).value = (
+            defaultTimeCapMinutes if defaultTimeCapMinutes is not None else None
+        )
         wsTaskTypes.cell(row=nextRow, column=3).value = "You can change this max paid time anytime."
 
         for colNum in range(1, 4):
@@ -1161,7 +1199,7 @@ def syncDefaultTaskTypesIntoWorkbook(workbook) -> None:
             cell.alignment = Alignment(vertical="center")
             cell.border = thinBorder
 
-        existingTaskTypes.add(taskTypeName)
+        existingTaskTypeRowMap[taskTypeName] = nextRow
         nextRow += 1
 
     updateTaskTypesTableRange(workbook)
