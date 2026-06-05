@@ -44,9 +44,7 @@ approvedTaskTypes = list(defaultTimeCapsMin.keys())
 
 
 headerFill = PatternFill("solid", fgColor="1F4E78")
-subheaderFill = PatternFill("solid", fgColor="D9EAF7")
 whiteFont = Font(color="FFFFFF", bold=True)
-boldFont = Font(bold=True)
 thinBorder = Border(
     left=Side(style="thin", color="D9E2F3"),
     right=Side(style="thin", color="D9E2F3"),
@@ -334,52 +332,108 @@ def normalizeHandshakeWeeklySummaryData(handshakeWeeklySummaryData: dict | None)
 def getHandshakeWeekValue(handshakeWeeklyPayByWeek: dict[date, dict], weekStartDate: date, key: str):
     weekData = handshakeWeeklyPayByWeek.get(weekStartDate, {})
     value = weekData.get(key)
-    return "" if value is None else value
 
-def addCleanEarningsChart(
+    # Keep missing Handshake values truly blank.
+    # This helps the chart skip missing Handshake earnings instead of showing a fake $0 bar.
+    return None if value is None else value
+
+def addExpectedVsHandshakeEarningsChart(
     ws,
     title: str,
     yAxisTitle: str,
-    xAxisTitle: str,
-    dataCol: int,
     categoryCol: int,
+    expectedEarningsCol: int,
+    handshakeEarningsCol: int,
     headerRow: int,
     firstDataRow: int,
     lastDataRow: int,
     anchorCell: str,
-    width: float = 18,
-    height: float = 9,
+    helperStartCol: int = 27,
+    width: float = 20,
+    height: float = 10,
+    categoryLabelFormula: str | None = None,
 ) -> None:
+    """
+    Creates a clean side-by-side bar chart comparing:
+    1. Expected Total Earnings
+    2. Handshake Total Earnings
+
+    The hidden helper label column is used so Excel does not display date serial numbers
+    like 46274, and missing Handshake earnings are skipped instead of shown as fake $0 bars.
+    """
     if lastDataRow < firstDataRow:
         return
 
+    helperCategoryCol = helperStartCol
+    helperExpectedCol = helperStartCol + 1
+    helperHandshakeCol = helperStartCol + 2
+
+    categoryColLetter = get_column_letter(categoryCol)
+    expectedEarningsColLetter = get_column_letter(expectedEarningsCol)
+    handshakeEarningsColLetter = get_column_letter(handshakeEarningsCol)
+
+    ws.cell(row=headerRow, column=helperCategoryCol).value = "Chart Label"
+    ws.cell(row=headerRow, column=helperExpectedCol).value = "Expected"
+    ws.cell(row=headerRow, column=helperHandshakeCol).value = "Handshake Paid"
+
+    for rowNum in range(firstDataRow, lastDataRow + 1):
+        if categoryLabelFormula:
+            ws.cell(row=rowNum, column=helperCategoryCol).value = categoryLabelFormula.format(row=rowNum)
+        else:
+            ws.cell(row=rowNum, column=helperCategoryCol).value = f"={categoryColLetter}{rowNum}"
+
+        ws.cell(row=rowNum, column=helperExpectedCol).value = f"={expectedEarningsColLetter}{rowNum}"
+        ws.cell(row=rowNum, column=helperHandshakeCol).value = (
+            f'=IF({handshakeEarningsColLetter}{rowNum}="",NA(),{handshakeEarningsColLetter}{rowNum})'
+        )
+
+        ws.cell(row=rowNum, column=helperExpectedCol).number_format = '$#,##0.00'
+        ws.cell(row=rowNum, column=helperHandshakeCol).number_format = '$#,##0.00'
+
+    for colNum in range(helperStartCol, helperStartCol + 3):
+        ws.column_dimensions[get_column_letter(colNum)].hidden = True
+
     chart = BarChart()
     chart.type = "col"
+    chart.grouping = "clustered"
     chart.style = 10
     chart.title = title
     chart.y_axis.title = yAxisTitle
-
-    # Do not show "Week" or "Month" as a big axis title because it blocks the date labels.
     chart.x_axis.title = None
 
-    chart.y_axis.numFmt = '$#,##0.00'
-    chart.height = height
+    chart.height = max(height, 11)
     chart.width = width
-    chart.gapWidth = 80
+    chart.y_axis.numFmt = '$#,##0.00'
+    chart.gapWidth = 115
     chart.overlap = 0
-    chart.legend = None
+    chart.display_blanks = "gap"
+    chart.visible_cells_only = False
 
-    # Keep category/date labels visible under each bar.
     chart.x_axis.delete = False
     chart.x_axis.tickLblPos = "low"
     chart.x_axis.majorTickMark = "none"
     chart.x_axis.minorTickMark = "none"
 
-    # Removes the dark horizontal gridlines that made the chart look messy.
     chart.y_axis.majorGridlines = None
 
-    data = Reference(ws, min_col=dataCol, min_row=headerRow, max_row=lastDataRow)
-    categories = Reference(ws, min_col=categoryCol, min_row=firstDataRow, max_row=lastDataRow)
+    # Put the legend below the date/month labels instead of on the right.
+    if chart.legend is not None:
+        chart.legend.position = "b"
+        chart.legend.overlay = False
+
+    data = Reference(
+        ws,
+        min_col=helperExpectedCol,
+        max_col=helperHandshakeCol,
+        min_row=headerRow,
+        max_row=lastDataRow,
+    )
+    categories = Reference(
+        ws,
+        min_col=helperCategoryCol,
+        min_row=firstDataRow,
+        max_row=lastDataRow,
+    )
 
     chart.add_data(data, titles_from_data=True)
     chart.set_categories(categories)
@@ -642,19 +696,21 @@ def createWorkbook(
         )
         wsSummary.add_table(weeklyTable)
 
-        addCleanEarningsChart(
+        addExpectedVsHandshakeEarningsChart(
             ws=wsSummary,
-            title="Weekly Earnings",
+            title="Weekly Expected vs Handshake Paid Earnings",
             yAxisTitle="Earnings",
-            xAxisTitle="Week",
-            dataCol=8,
             categoryCol=3,
+            expectedEarningsCol=8,
+            handshakeEarningsCol=9,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastWeekRow,
             anchorCell="K3",
-            width=18,
-            height=9,
+            helperStartCol=27,
+            width=22,
+            height=11,
+            categoryLabelFormula='=TEXT(A{row},"m/d")&" - "&TEXT(B{row},"m/d")',
         )
 
     wsSummary.freeze_panes = "A3"
@@ -726,19 +782,21 @@ def createWorkbook(
         )
         wsMonthly.add_table(monthlyTable)
 
-        addCleanEarningsChart(
+        addExpectedVsHandshakeEarningsChart(
             ws=wsMonthly,
-            title="Monthly Earnings",
+            title="Monthly Expected vs Handshake Paid Earnings",
             yAxisTitle="Earnings",
-            xAxisTitle="Month",
-            dataCol=6,
             categoryCol=1,
+            expectedEarningsCol=6,
+            handshakeEarningsCol=7,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastMonthRow,
             anchorCell="I3",
-            width=17,
-            height=9,
+            helperStartCol=27,
+            width=19,
+            height=11,
+            categoryLabelFormula='=TEXT(A{row},"mmm yyyy")',
         )
 
     wsMonthly.freeze_panes = "A3"
@@ -1041,19 +1099,21 @@ def refreshWeeklySummarySheet(
         )
         wsSummary.add_table(weeklyTable)
 
-        addCleanEarningsChart(
+        addExpectedVsHandshakeEarningsChart(
             ws=wsSummary,
-            title="Weekly Earnings",
+            title="Weekly Expected vs Handshake Paid Earnings",
             yAxisTitle="Earnings",
-            xAxisTitle="Week",
-            dataCol=8,
             categoryCol=3,
+            expectedEarningsCol=8,
+            handshakeEarningsCol=9,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastWeekRow,
             anchorCell="K3",
-            width=18,
-            height=9,
+            helperStartCol=27,
+            width=22,
+            height=11,
+            categoryLabelFormula='=TEXT(A{row},"m/d")&" - "&TEXT(B{row},"m/d")',
         )
 
     wsSummary.freeze_panes = "A3"
@@ -1157,19 +1217,21 @@ def refreshMonthlySummarySheet(workbook, monthStartDates: list[date], headerMap:
         )
         wsMonthly.add_table(monthlyTable)
 
-        addCleanEarningsChart(
+        addExpectedVsHandshakeEarningsChart(
             ws=wsMonthly,
-            title="Monthly Earnings",
+            title="Monthly Expected vs Handshake Paid Earnings",
             yAxisTitle="Earnings",
-            xAxisTitle="Month",
-            dataCol=6,
             categoryCol=1,
+            expectedEarningsCol=6,
+            handshakeEarningsCol=7,
             headerRow=2,
             firstDataRow=3,
             lastDataRow=lastMonthRow,
             anchorCell="I3",
-            width=17,
-            height=9,
+            helperStartCol=27,
+            width=19,
+            height=11,
+            categoryLabelFormula='=TEXT(A{row},"mmm yyyy")',
         )
 
     wsMonthly.freeze_panes = "A3"
