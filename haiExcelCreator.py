@@ -38,6 +38,7 @@ defaultTimeCapsMin = {
     "260310-live-s2s-elo": 45,
     "260403-omni-multiturn-elo": 20,
     "vs-1776345130-video-audio-caption-comparison-robinsr-v2-apr16": 20,
+    "find-the-boundary-v2":None,
 }
 
 approvedTaskTypes = list(defaultTimeCapsMin.keys())
@@ -285,9 +286,13 @@ def createWorkbook(tasks: list[dict], projectName: str, hourlyPay: float, output
         wsTasks.cell(row=rowNum, column=5).value = (
             f'=IF(OR($H{rowNum}="",\'Settings\'!$B$4=""),"",$H{rowNum}/60*\'Settings\'!$B$4)'
         )
+        timeCapLookupFormula = f'VLOOKUP($D{rowNum},\'Task Types\'!$A$3:$B$1000,2,FALSE)'
+
         wsTasks.cell(row=rowNum, column=7).value = (
-            f'=IF($D{rowNum}="","",IFERROR(VLOOKUP($D{rowNum},\'Task Types\'!$A$3:$B$1000,2,FALSE),""))'
+            f'=IF($D{rowNum}="","",'
+            f'IFERROR(IF({timeCapLookupFormula}=0,"",{timeCapLookupFormula}),""))'
         )
+
         wsTasks.cell(row=rowNum, column=8).value = (
             f'=IF(OR($F{rowNum}="",$G{rowNum}=""),"",MIN($F{rowNum},$G{rowNum}))'
         )
@@ -968,10 +973,14 @@ def rebuildTaskRowFormulas(wsTasks, rowNum: int, headerMap: dict[str, int]) -> N
     if timeCapCol is not None:
         timeCapColLetter = get_column_letter(timeCapCol)
 
+        timeCapLookupFormula = (
+            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
+            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)'
+        )
+
         wsTasks.cell(row=rowNum, column=timeCapCol).value = (
             f'=IF(${taskTypeColLetter}{rowNum}="","",'
-            f'IFERROR(VLOOKUP(${taskTypeColLetter}{rowNum},'
-            f'\'Task Types\'!$A$3:$B$1000,2,FALSE),""))'
+            f'IFERROR(IF({timeCapLookupFormula}=0,"",{timeCapLookupFormula}),""))'
         )
 
         wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
@@ -979,11 +988,15 @@ def rebuildTaskRowFormulas(wsTasks, rowNum: int, headerMap: dict[str, int]) -> N
             f'MIN(${actualMinutesColLetter}{rowNum},${timeCapColLetter}{rowNum}))'
         )
     else:
+        timeCapLookupFormula = (
+            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
+            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)'
+        )
+
         wsTasks.cell(row=rowNum, column=paidMinutesCol).value = (
             f'=IF(OR(${actualMinutesColLetter}{rowNum}="",${taskTypeColLetter}{rowNum}=""),"",'
-            f'IFERROR(MIN(${actualMinutesColLetter}{rowNum},'
-            f'VLOOKUP(${taskTypeColLetter}{rowNum},'
-            f'\'Task Types\'!$A$3:$B$1000,2,FALSE)),""))'
+            f'IFERROR(IF({timeCapLookupFormula}=0,"",'
+            f'MIN(${actualMinutesColLetter}{rowNum},{timeCapLookupFormula})),""))'
         )
 
     wsTasks.cell(row=rowNum, column=projectCol).value = "='Settings'!$B$3"
@@ -1078,6 +1091,81 @@ def refreshTaskTypeDropdownRange(wsTasks, headerMap: dict[str, int]) -> None:
     wsTasks.add_data_validation(taskDropdown)
     taskDropdown.add(targetRange)
 
+def getLastTaskTypeRow(wsTaskTypes) -> int:
+    lastTaskTypeRow = 2
+
+    for rowNum in range(3, wsTaskTypes.max_row + 1):
+        taskTypeValue = wsTaskTypes.cell(row=rowNum, column=1).value
+
+        if taskTypeValue is not None and str(taskTypeValue).strip():
+            lastTaskTypeRow = rowNum
+
+    return lastTaskTypeRow
+
+
+def getExistingTaskTypeNames(wsTaskTypes) -> set[str]:
+    existingTaskTypes = set()
+
+    for rowNum in range(3, wsTaskTypes.max_row + 1):
+        taskTypeValue = wsTaskTypes.cell(row=rowNum, column=1).value
+
+        if taskTypeValue is not None and str(taskTypeValue).strip():
+            existingTaskTypes.add(str(taskTypeValue).strip())
+
+    return existingTaskTypes
+
+
+def updateTaskTypesTableRange(workbook) -> None:
+    if "Task Types" not in workbook.sheetnames:
+        return
+
+    wsTaskTypes = workbook["Task Types"]
+    lastTaskTypeRow = getLastTaskTypeRow(wsTaskTypes)
+
+    if lastTaskTypeRow < 2:
+        return
+
+    newRef = f"A2:C{lastTaskTypeRow}"
+
+    for table in wsTaskTypes.tables.values():
+        if table.displayName == "TaskTypesTable":
+            table.ref = newRef
+            return
+
+
+def syncDefaultTaskTypesIntoWorkbook(workbook) -> None:
+    """
+    Keeps task types that the user manually added in the existing workbook,
+    and also appends any new task types from defaultTimeCapsMin that are missing.
+    Unknown caps can be None and will stay blank in Excel.
+    """
+    if "Task Types" not in workbook.sheetnames:
+        return
+
+    wsTaskTypes = workbook["Task Types"]
+    existingTaskTypes = getExistingTaskTypeNames(wsTaskTypes)
+    nextRow = getLastTaskTypeRow(wsTaskTypes) + 1
+
+    for taskType, timeCapMinutes in defaultTimeCapsMin.items():
+        taskTypeName = str(taskType).strip()
+
+        if not taskTypeName or taskTypeName in existingTaskTypes:
+            continue
+
+        wsTaskTypes.cell(row=nextRow, column=1).value = taskTypeName
+        wsTaskTypes.cell(row=nextRow, column=2).value = timeCapMinutes if timeCapMinutes is not None else None
+        wsTaskTypes.cell(row=nextRow, column=3).value = "You can change this max paid time anytime."
+
+        for colNum in range(1, 4):
+            cell = wsTaskTypes.cell(row=nextRow, column=colNum)
+            cell.alignment = Alignment(vertical="center")
+            cell.border = thinBorder
+
+        existingTaskTypes.add(taskTypeName)
+        nextRow += 1
+
+    updateTaskTypesTableRange(workbook)
+
 def appendMissingTasksToExistingWorkbook(
     tasks: list[dict],
     projectName: str,
@@ -1094,6 +1182,8 @@ def appendMissingTasksToExistingWorkbook(
     )
 
     workbook = load_workbook(updatedWorkbookPath)
+
+    syncDefaultTaskTypesIntoWorkbook(workbook)
 
     if "Tasks" not in workbook.sheetnames:
         raise ValueError(f"Existing workbook does not have a Tasks sheet: {existingWorkbookPath}")
