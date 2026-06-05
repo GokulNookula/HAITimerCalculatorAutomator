@@ -38,7 +38,6 @@ defaultTimeCapsMin = {
     "260310-live-s2s-elo": 45,
     "260403-omni-multiturn-elo": 20,
     "vs-1776345130-video-audio-caption-comparison-robinsr-v2-apr16": 20,
-    "find-the-boundary-v2": 25,
 }
 
 approvedTaskTypes = list(defaultTimeCapsMin.keys())
