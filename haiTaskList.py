@@ -41,6 +41,147 @@ def extractProjectPayRate(payRateText: str):
 
     return payRateMatch.group()
 
+def normalizeHandshakeProjectName(projectName: str):
+    cleanedProjectName = projectName.strip()
+    cleanedProjectName = cleanedProjectName.replace("–", "-").replace("—", "-")
+    cleanedProjectName = re.sub(r"\s+", " ", cleanedProjectName)
+    cleanedProjectName = re.sub(r"\s*-\s*", " - ", cleanedProjectName)
+
+    return cleanedProjectName.strip().lower()
+
+
+def getVisibleProjectNames(driver):
+    projectNames = []
+
+    projectCards = driver.find_elements(
+        By.XPATH,
+        "//section[.//button[normalize-space(.)='View project' or @aria-label='View project']]"
+    )
+
+    for projectCard in projectCards:
+        projectNameElements = projectCard.find_elements(
+            By.XPATH,
+            ".//p[contains(@class,'rosetta-body-large')]"
+        )
+
+        if projectNameElements:
+            projectName = projectNameElements[0].text.strip()
+
+            if projectName:
+                projectNames.append(projectName)
+
+    return projectNames
+
+
+def findProjectViewButton(driver, targetProjectName):
+    normalizedTargetProjectName = normalizeHandshakeProjectName(targetProjectName)
+
+    projectCards = driver.find_elements(
+        By.XPATH,
+        "//section[.//button[normalize-space(.)='View project' or @aria-label='View project']]"
+    )
+
+    for projectCard in projectCards:
+        try:
+            projectNameElements = projectCard.find_elements(
+                By.XPATH,
+                ".//p[contains(@class,'rosetta-body-large')]"
+            )
+
+            if not projectNameElements:
+                continue
+
+            displayedProjectName = projectNameElements[0].text.strip()
+            normalizedDisplayedProjectName = normalizeHandshakeProjectName(displayedProjectName)
+
+            if normalizedDisplayedProjectName != normalizedTargetProjectName:
+                continue
+
+            viewProjectButtons = projectCard.find_elements(
+                By.XPATH,
+                ".//button[normalize-space(.)='View project' or @aria-label='View project']"
+            )
+
+            if not viewProjectButtons:
+                raise RuntimeError(
+                    f"Found project '{displayedProjectName}', but could not find its View Project button."
+                )
+
+            return {
+                "button": viewProjectButtons[0],
+                "projectName": displayedProjectName
+            }
+
+        except WebDriverException:
+            continue
+
+    return False
+
+def openHandshakeProjectByName(driver, targetProjectName="Project Hedgehog - Evals"):
+    normalizedTargetProjectName = normalizeHandshakeProjectName(targetProjectName)
+
+    waitForElement(
+        driver,
+        By.XPATH,
+        "//main",
+        120,
+        EC.presence_of_element_located,
+        "Could not find the Handshake AI main page after login."
+    )
+
+    try:
+        projectMatch = WebDriverWait(driver, 120, poll_frequency=1).until(
+            lambda d: findProjectViewButton(d, targetProjectName)
+        )
+    except TimeoutException as error:
+        visibleProjectNames = getVisibleProjectNames(driver)
+        raise RuntimeError(
+            f"Could not find the exact project '{targetProjectName}'. "
+            f"Projects found on the page: {visibleProjectNames}"
+        ) from error
+
+    viewProjectButton = projectMatch["button"]
+    displayedProjectName = projectMatch["projectName"]
+
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
+        viewProjectButton
+    )
+
+    oldUrl = driver.current_url
+
+    try:
+        WebDriverWait(driver, 20).until(
+            lambda d: viewProjectButton.is_displayed() and viewProjectButton.is_enabled()
+        )
+        viewProjectButton.click()
+    except WebDriverException:
+        driver.execute_script("arguments[0].click();", viewProjectButton)
+
+    # Wait until the page actually changes away from the AI Work projects page.
+    try:
+        WebDriverWait(driver, 60).until(lambda d: d.current_url != oldUrl)
+    except TimeoutException:
+        pass
+
+    # Wait specifically for the real project page h1, not the old "AI work" h1.
+    projectNameHeader = waitForElement(
+        driver,
+        By.XPATH,
+        f"//h1[normalize-space()='{targetProjectName}']",
+        120,
+        EC.presence_of_element_located,
+        f"Clicked View Project for '{displayedProjectName}', but the '{targetProjectName}' project page did not load."
+    )
+
+    if normalizeHandshakeProjectName(projectNameHeader.text) != normalizedTargetProjectName:
+        raise RuntimeError(
+            f"Clicked View Project for '{displayedProjectName}', but landed on "
+            f"'{projectNameHeader.text}'. Expected '{targetProjectName}'."
+        )
+
+    print(f"Opened Handshake project: {projectNameHeader.text}")
+    return projectNameHeader.text
 
 def loginToHandshakeAI(driver):
     # Wait for Google button and click it
@@ -211,6 +352,8 @@ def scrapeTaskRows(driver, startDate, endDate, projName, projPayRate, userEmailC
 
 def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeBrowserWhenDone: bool = True):
     driver = None
+    # EDIT ME ONCE YOU IMPLEMENT THIS
+    handshakeWeeklySummaryData = None
     currentStep = "starting the scraper"
 
     try:
@@ -229,6 +372,9 @@ def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeB
 
         currentStep = "logging into Handshake AI with Google"
         loginToHandshakeAI(driver)
+
+        currentStep = "opening the Hedgehog - Evals project"
+        openHandshakeProjectByName(driver, "Project Hedgehog - Evals")
 
         currentStep = "getting the name of the project"
         # Getting the name of the project
@@ -271,7 +417,7 @@ def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeB
         taskDateDict = scrapeTaskRows(driver, startDate, endDate, projName, projPayRate, userEmailCpy)
 
         print(f"Found {len(taskDateDict)} tasks between {startDateInput} and {endDateInput}.")
-        return taskDateDict
+        return taskDateDict, handshakeWeeklySummaryData
 
     except ValueError as error:
         print("Input error: please check your date range and input values.")
