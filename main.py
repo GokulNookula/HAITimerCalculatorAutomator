@@ -2,9 +2,8 @@ from haiTaskList import haiTaskListScraper
 from haiCSVCreator import haiTaskListCSVCreator
 from haiExcelCreator import createHandshakeEarningsTracker
 
-
 def getUserInputs():
-    defaultTaskLink = "https://ai.joinhandshake.com/fellow/15727563-a6cd-46b6-9c57-9bc1359b43b8/tasks"
+    defaultTaskLink = "https://ai.joinhandshake.com/fellow/projects"
 
     print("Handshake AI Task List CSV Tool")
     print("Leave the task link blank to use the default Project Hedgehog task link.")
@@ -61,7 +60,7 @@ def main():
         ) = getUserInputs()
 
         # Run the Selenium task scraper first
-        taskDateDict = haiTaskListScraper(taskLink, startDateInput, endDateInput, closeBrowserWhenDone)
+        taskDateDict, handshakeWeeklySummaryData = haiTaskListScraper(taskLink, startDateInput, endDateInput, closeBrowserWhenDone)
 
         if not taskDateDict:
             print("No CSV was created because the scraper did not return any task rows.")
@@ -83,6 +82,7 @@ def main():
                 outputFolder=outputFolder,
                 outputFileName="HandshakeEarningTracker.xlsx",
                 existingWorkbookPath=existingExcelPath,
+                handshakeWeeklySummaryData=handshakeWeeklySummaryData,
             )
 
             if excelFilePath:
