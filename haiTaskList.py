@@ -195,131 +195,355 @@ def openHandshakeProjectByName(driver, targetProjectName="Project Hedgehog - Eva
     print(f"Opened Handshake project: {projectNameHeader.text}")
     return projectNameHeader.text
 
-def loginToHandshakeAI(driver, email, password, netid):
-    # Wait for Google button and click it
+def makeXPathLiteral(text: str):
+    if "'" not in text:
+        return f"'{text}'"
+
+    if '"' not in text:
+        return f'"{text}"'
+
+    return "concat(" + ", \"'\", ".join(f"'{part}'" for part in text.split("'")) + ")"
+
+
+def clickElementWithFallback(driver, element):
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
+        element
+    )
+
+    try:
+        element.click()
+    except WebDriverException:
+        driver.execute_script("arguments[0].click();", element)
+
+
+def clickContinueWithGoogleButton(driver):
     googleButton = waitForElement(
         driver,
         By.XPATH,
-        "//span[contains(text(),'Continue with Google')]",
+        "//div[@role='button' and .//span[normalize-space(.)='Continue with Google']]"
+        " | //button[.//span[normalize-space(.)='Continue with Google']]"
+        " | //span[normalize-space(.)='Continue with Google']/ancestor::*[@role='button'][1]",
         20,
         EC.element_to_be_clickable,
         "Could not find or click the 'Continue with Google' button."
     )
-    googleButton.click()
 
-    # Save original Handshake tab
-    mainWindow = driver.current_window_handle
+    clickElementWithFallback(driver, googleButton)
 
-    # Wait for popup window
+
+def closeExtraGoogleLoginWindows(driver, mainWindow):
+    for window in list(driver.window_handles):
+        if window == mainWindow:
+            continue
+
+        try:
+            driver.switch_to.window(window)
+            driver.close()
+        except WebDriverException:
+            pass
+
+    driver.switch_to.window(mainWindow)
+
+
+def switchToGoogleLoginPopup(driver, mainWindow, timeoutSeconds=10):
+    def findGooglePopup(currentDriver):
+        for window in currentDriver.window_handles:
+            if window == mainWindow:
+                continue
+
+            try:
+                currentDriver.switch_to.window(window)
+
+                if "accounts.google.com" in currentDriver.current_url:
+                    return window
+
+            except WebDriverException:
+                continue
+
+        return False
+
     try:
-        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
+        return WebDriverWait(driver, timeoutSeconds, poll_frequency=1).until(findGooglePopup)
     except TimeoutException as error:
         raise RuntimeError("Google login popup did not open after clicking 'Continue with Google'.") from error
 
-    googleWindowFound = False
 
-    for window in driver.window_handles:
+def waitForGoogleLoginPopupReady(driver, email, timeoutSeconds=12):
+    emailXPathLiteral = makeXPathLiteral(email)
 
-        driver.switch_to.window(window)
+    savedAccountXPath = (
+        f"//*[@data-email={emailXPathLiteral}]/ancestor::*[@role='link' or @role='button'][1]"
+        f" | //*[normalize-space(.)={emailXPathLiteral}]/ancestor::*[@role='link' or @role='button'][1]"
+    )
 
-        # Only continue if this is the Google sign in page
-        if "accounts.google.com" in driver.current_url:
-            googleWindowFound = True
+    def getGoogleLoginState(currentDriver):
+        try:
+            if len(currentDriver.window_handles) == 1:
+                return "popupClosed"
 
-            # Inputting the email
-            emailInput = waitForElement(
+            if currentDriver.find_elements(By.ID, "identifierId"):
+                return "emailInput"
+
+            if currentDriver.find_elements(By.XPATH, savedAccountXPath):
+                return "savedAccountChooser"
+
+            if currentDriver.find_elements(By.ID, "username") or currentDriver.find_elements(By.ID, "password"):
+                return "ucrLogin"
+
+            return False
+
+        except (NoSuchWindowException, WebDriverException, StaleElementReferenceException):
+            return False
+
+    try:
+        return WebDriverWait(driver, timeoutSeconds, poll_frequency=1).until(getGoogleLoginState)
+    except TimeoutException as error:
+        raise RuntimeError(
+            "Google login popup opened, but it did not load the email input, saved account chooser, or UCR login page."
+        ) from error
+
+
+def clickSavedGoogleAccount(driver, email):
+    emailXPathLiteral = makeXPathLiteral(email)
+
+    savedAccountXPath = (
+        f"//*[@data-email={emailXPathLiteral}]/ancestor::*[@role='link' or @role='button'][1]"
+        f" | //*[normalize-space(.)={emailXPathLiteral}]/ancestor::*[@role='link' or @role='button'][1]"
+    )
+
+    savedAccountButton = waitForElement(
+        driver,
+        By.XPATH,
+        savedAccountXPath,
+        20,
+        EC.element_to_be_clickable,
+        f"Could not find or click the saved Google account for {email}."
+    )
+
+    clickElementWithFallback(driver, savedAccountButton)
+
+
+def enterGoogleEmailAndContinue(driver, email):
+    emailInput = waitForElement(
+        driver,
+        By.XPATH,
+        '//*[@id="identifierId"]',
+        20,
+        EC.presence_of_element_located,
+        "Could not find the Google email input."
+    )
+
+    emailInput.clear()
+    emailInput.send_keys(email)
+
+    nextButton = waitForElement(
+        driver,
+        By.XPATH,
+        '//*[@id="identifierNext"]/div/button/span',
+        20,
+        EC.element_to_be_clickable,
+        "Could not find or click the Google email next button."
+    )
+
+    clickElementWithFallback(driver, nextButton)
+
+
+def optionalClickElement(driver, byType, locatorValue, timeoutSeconds):
+    try:
+        element = WebDriverWait(driver, timeoutSeconds).until(
+            EC.element_to_be_clickable((byType, locatorValue))
+        )
+        clickElementWithFallback(driver, element)
+        return True
+    except TimeoutException:
+        return False
+    except WebDriverException:
+        return False
+
+
+def completeUcrLoginIfShown(driver, password, netid):
+    try:
+        usernameInput = WebDriverWait(driver, 20).until(
+            lambda d: d.find_element(By.ID, "username")
+            if d.find_elements(By.ID, "username")
+            else False
+        )
+    except TimeoutException:
+        return
+    except (NoSuchWindowException, WebDriverException):
+        return
+
+    usernameInput.clear()
+    usernameInput.send_keys(netid)
+
+    passwordInput = waitForElement(
+        driver,
+        By.ID,
+        "password",
+        20,
+        EC.presence_of_element_located,
+        "Could not find the UCR password input."
+    )
+
+    passwordInput.clear()
+    passwordInput.send_keys(password)
+
+    signInButton = waitForElement(
+        driver,
+        By.XPATH,
+        '//*[@id="fm1"]/div[2]/button',
+        20,
+        EC.element_to_be_clickable,
+        "Could not find or click the UCR sign in button."
+    )
+
+    clickElementWithFallback(driver, signInButton)
+
+    optionalClickElement(
+        driver,
+        By.XPATH,
+        '//*[@id="trust-browser-button"]',
+        60
+    )
+
+    optionalClickElement(
+        driver,
+        By.XPATH,
+        '//*[@id="yDmH0d"]/div[1]/div[1]/div[2]/div/div/div[3]/div/div[1]/div/div/button',
+        60
+    )
+
+def waitAfterGoogleAccountSelection(driver, mainWindow, timeoutSeconds=90):
+    def getPostGoogleSelectionState(currentDriver):
+        try:
+            if len(currentDriver.window_handles) == 1:
+                currentDriver.switch_to.window(mainWindow)
+                return "popupClosed"
+
+            for window in currentDriver.window_handles:
+                if window == mainWindow:
+                    continue
+
+                try:
+                    currentDriver.switch_to.window(window)
+
+                    if currentDriver.find_elements(By.ID, "username") or currentDriver.find_elements(By.ID, "password"):
+                        return "ucrLogin"
+
+                except (NoSuchWindowException, WebDriverException):
+                    continue
+
+            return False
+
+        except (NoSuchWindowException, WebDriverException, StaleElementReferenceException):
+            return False
+
+    try:
+        return WebDriverWait(driver, timeoutSeconds, poll_frequency=1).until(getPostGoogleSelectionState)
+    except TimeoutException as error:
+        raise RuntimeError(
+            "After selecting the Google account, the popup did not close and the UCR login page did not appear."
+        ) from error
+
+def loginToHandshakeAI(driver, email, password, netid):
+    mainWindow = driver.current_window_handle
+    maxLoginAttempts = 2
+    lastError = None
+
+    for attemptNumber in range(1, maxLoginAttempts + 1):
+        try:
+            print(f"Starting UCR Google auto-login attempt {attemptNumber} of {maxLoginAttempts}.")
+
+            driver.switch_to.window(mainWindow)
+
+            # Step 1: Click Continue with Google on the Handshake AI login page.
+            clickContinueWithGoogleButton(driver)
+
+            # Step 2: Switch into the Google popup.
+            switchToGoogleLoginPopup(driver, mainWindow, timeoutSeconds=10)
+
+            # Step 3: Wait for a usable Google page.
+            # If the popup gets stuck on accounts.google.com/gsi/transform, this will timeout.
+            googleLoginState = waitForGoogleLoginPopupReady(
                 driver,
-                By.XPATH,
-                '//*[@id="identifierId"]',
-                20,
-                EC.presence_of_element_located,
-                "Could not find the Google email input."
+                email,
+                timeoutSeconds=12
             )
-            # emailInput.send_keys(myThing.email)
-            emailInput.send_keys(email)
 
-            # Clicking next button
-            nextButton = waitForElement(
-                driver,
-                By.XPATH,
-                '//*[@id="identifierNext"]/div/button/span',
-                20,
-                EC.element_to_be_clickable,
-                "Could not find or click the Google email next button."
-            )
-            nextButton.click()
+            if googleLoginState == "popupClosed":
+                driver.switch_to.window(mainWindow)
+                print("Google popup closed. Continuing in the main Handshake AI window.")
+                return
 
-            # Wait for the username field to be present and enter the username
-            usernameInput = waitForElement(
-                driver,
-                By.ID,
-                "username",
-                20,
-                EC.presence_of_element_located,
-                "Could not find the UCR username input."
-            )
-            # usernameInput.send_keys(myThing.netid)
-            usernameInput.send_keys(netid)
+            if googleLoginState == "savedAccountChooser":
+                print(f"Saved Google account found. Selecting {email}.")
+                clickSavedGoogleAccount(driver, email)
 
-            # Locate and fill in the password field
-            passwordInput = waitForElement(
-                driver,
-                By.ID,
-                "password",
-                20,
-                EC.presence_of_element_located,
-                "Could not find the UCR password input."
-            )
-            # passwordInput.send_keys(myThing.password)
-            passwordInput.send_keys(password)
+                postGoogleSelectionState = waitAfterGoogleAccountSelection(
+                    driver,
+                    mainWindow,
+                    timeoutSeconds=90
+                )
 
-            # Locate and click the Sign In button
-            signInButton = waitForElement(
-                driver,
-                By.XPATH,
-                '//*[@id="fm1"]/div[2]/button',
-                20,
-                EC.element_to_be_clickable,
-                "Could not find or click the UCR sign in button."
-            )
-            signInButton.click()
+                if postGoogleSelectionState == "popupClosed":
+                    driver.switch_to.window(mainWindow)
+                    print("Google account was accepted and the login popup closed.")
+                    return
 
-            # Click "Yes this is my device" for UCR
-            yesMyDeviceButton = waitForElement(
-                driver,
-                By.XPATH,
-                '//*[@id="trust-browser-button"]',
-                60,
-                EC.element_to_be_clickable,
-                "Could not find or click the UCR 'Yes this is my device' button."
-            )
-            yesMyDeviceButton.click()
+                if postGoogleSelectionState == "ucrLogin":
+                    print("UCR login page found after selecting the saved Google account.")
+                    completeUcrLoginIfShown(driver, password, netid)
 
-            # Clicking Continue on Verify it's you page
-            continueButton = waitForElement(
-                driver,
-                By.XPATH,
-                '//*[@id="yDmH0d"]/div[1]/div[1]/div[2]/div/div/div[3]/div/div[1]/div/div/button',
-                60,
-                EC.element_to_be_clickable,
-                "Could not find or click the Google verify continue button."
-            )
-            continueButton.click()
+            elif googleLoginState == "emailInput":
+                print("Google email input found. Entering UCR email.")
+                enterGoogleEmailAndContinue(driver, email)
 
-            # Wait until popup closes
+                postGoogleSelectionState = waitAfterGoogleAccountSelection(
+                    driver,
+                    mainWindow,
+                    timeoutSeconds=90
+                )
+
+                if postGoogleSelectionState == "popupClosed":
+                    driver.switch_to.window(mainWindow)
+                    print("Google account was accepted and the login popup closed.")
+                    return
+
+                if postGoogleSelectionState == "ucrLogin":
+                    print("UCR login page found after entering the Google email.")
+                    completeUcrLoginIfShown(driver, password, netid)
+
+            elif googleLoginState == "ucrLogin":
+                print("UCR login page found.")
+                completeUcrLoginIfShown(driver, password, netid)
+
+            # Step 4: Wait for the Google popup to close after UCR login finishes.
             try:
-                WebDriverWait(driver, 60).until(lambda d: len(d.window_handles) == 1)
+                WebDriverWait(driver, 90).until(lambda d: len(d.window_handles) == 1)
             except TimeoutException as error:
                 raise RuntimeError("Google login popup did not close after finishing the login flow.") from error
 
-            # Switch back to main Handshake window
             driver.switch_to.window(mainWindow)
+            print("UCR Google auto-login finished successfully.")
+            return
 
-            break
+        except (RuntimeError, TimeoutException, WebDriverException, NoSuchWindowException) as error:
+            lastError = error
+            print(f"UCR Google auto-login attempt {attemptNumber} failed.")
+            print(f"Details: {error}")
 
-    if not googleWindowFound:
-        raise RuntimeError("Could not find the Google sign in popup window.")
+            try:
+                closeExtraGoogleLoginWindows(driver, mainWindow)
+            except WebDriverException:
+                pass
 
+            if attemptNumber < maxLoginAttempts:
+                print("Retrying UCR Google login by clicking 'Continue with Google' again.")
+            else:
+                raise RuntimeError(
+                    f"UCR Google auto-login failed after {maxLoginAttempts} attempts."
+                ) from lastError
 
 def scrapeTaskRows(driver, startDate, endDate, projName, projPayRate, userEmailCpy):
     # Wait for table rows to load
@@ -572,7 +796,7 @@ def selectPaymentTimeRangeAllTime(driver):
             print(f"Attempt {attemptNumber} failed while selecting All time.")
 
             if attemptNumber == maxAttempts:
-                raise RuntimeError("Could not select the payment time range as All time after 2 attempts.") from lastError
+                raise RuntimeError("Could not select the payment time range as All time after {maxAttempts} attempts.") from lastError
 
 def extractPaymentWeekLabel(driver, paymentWeekButton):
     ariaLabel = paymentWeekButton.get_attribute("aria-label") or ""
