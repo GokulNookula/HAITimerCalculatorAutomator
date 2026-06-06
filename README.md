@@ -1,5 +1,3 @@
-Paste this entire content into your `README.md`:
-
 # HAI Timer Calculator Automator
 
 This project scrapes Handshake AI task/payment data and creates a CSV plus an Excel earnings tracker.
