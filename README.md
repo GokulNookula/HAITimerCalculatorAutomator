@@ -1,5 +1,23 @@
 # HAI Timer Calculator Automator
 
+## ❤️ Support the Project
+
+P.S. This project took me a long time to build, test, and maintain. If it has been useful to you and you'd like to support future updates, bug fixes, and new features, any donation is greatly appreciated.
+
+### Venmo
+
+<p align="center">
+  <img width="335" height="423" alt="Venmo QR Code" src="https://github.com/user-attachments/assets/2620d97f-5e18-42b4-8554-7fe61a9ccea8" />
+</p>
+
+<p align="center">
+  <strong>Venmo: @Gokul-Nookula</strong>
+</p>
+
+<p align="center">
+  <strong>Thank you for supporting the project and helping keep it actively maintained! ❤️</strong>
+</p>
+
 This project scrapes Handshake AI task/payment data and creates a CSV plus an Excel earnings tracker.
 
 ## What the PyInstaller build gives users
