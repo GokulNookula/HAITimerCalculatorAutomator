@@ -269,7 +269,7 @@ def switchToGoogleLoginPopup(driver, mainWindow, timeoutSeconds=10):
         raise RuntimeError("Google login popup did not open after clicking 'Continue with Google'.") from error
 
 
-def waitForGoogleLoginPopupReady(driver, email, timeoutSeconds=12):
+def waitForGoogleLoginPopupReady(driver, email, timeoutSeconds=6):
     emailXPathLiteral = makeXPathLiteral(email)
 
     savedAccountXPath = (
@@ -414,7 +414,7 @@ def completeUcrLoginIfShown(driver, password, netid):
         60
     )
 
-def waitAfterGoogleAccountSelection(driver, mainWindow, timeoutSeconds=90):
+def waitAfterGoogleAccountSelection(driver, mainWindow, timeoutSeconds=30):
     def getPostGoogleSelectionState(currentDriver):
         try:
             if len(currentDriver.window_handles) == 1:
@@ -468,7 +468,7 @@ def loginToHandshakeAI(driver, email, password, netid):
             googleLoginState = waitForGoogleLoginPopupReady(
                 driver,
                 email,
-                timeoutSeconds=12
+                timeoutSeconds=6
             )
 
             if googleLoginState == "popupClosed":
@@ -483,7 +483,7 @@ def loginToHandshakeAI(driver, email, password, netid):
                 postGoogleSelectionState = waitAfterGoogleAccountSelection(
                     driver,
                     mainWindow,
-                    timeoutSeconds=90
+                    timeoutSeconds=30
                 )
 
                 if postGoogleSelectionState == "popupClosed":
@@ -502,7 +502,7 @@ def loginToHandshakeAI(driver, email, password, netid):
                 postGoogleSelectionState = waitAfterGoogleAccountSelection(
                     driver,
                     mainWindow,
-                    timeoutSeconds=90
+                    timeoutSeconds=30
                 )
 
                 if postGoogleSelectionState == "popupClosed":
@@ -520,7 +520,7 @@ def loginToHandshakeAI(driver, email, password, netid):
 
             # Step 4: Wait for the Google popup to close after UCR login finishes.
             try:
-                WebDriverWait(driver, 90).until(lambda d: len(d.window_handles) == 1)
+                WebDriverWait(driver, 45).until(lambda d: len(d.window_handles) == 1)
             except TimeoutException as error:
                 raise RuntimeError("Google login popup did not close after finishing the login flow.") from error
 
