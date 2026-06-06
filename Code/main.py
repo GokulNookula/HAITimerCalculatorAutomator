@@ -1,6 +1,8 @@
-from haiTaskList import haiTaskListScraper
-from haiCSVCreator import haiTaskListCSVCreator
-from haiExcelCreator import createHandshakeEarningsTracker
+import sys
+
+from Code.haiTaskList import haiTaskListScraper
+from Code.haiCSVCreator import haiTaskListCSVCreator
+from Code.haiExcelCreator import createHandshakeEarningsTracker
 
 def getUserInputs():
     taskLink = "https://ai.joinhandshake.com/fellow/projects"
@@ -11,10 +13,10 @@ def getUserInputs():
     startDateInput = input("Enter the start date. Only tasks and payments on or after this date will be included in the format MM/DD/YYYY: ").strip()
     endDateInput = input("Enter the end date. Only tasks and payments on or before this date will be included in the format MM/DD/YYYY: ").strip()
 
-    outputFolder = input("Enter output folder name or press Enter to keep the default name \"Output Folder\": ").strip()
+    outputFolder = input("Enter output folder name or press Enter to keep the default name \"OutputFolder\": ").strip()
 
     if not outputFolder:
-        outputFolder = "Output Folder"
+        outputFolder = "OutputFolder"
 
     useAutomaticUcrLogin = False
     email = ""
@@ -146,3 +148,8 @@ def main():
 if __name__ == "__main__":
     main()
 
+    if getattr(sys, "frozen", False):
+        try:
+            input("\nPress Enter to exit...")
+        except KeyboardInterrupt:
+            pass

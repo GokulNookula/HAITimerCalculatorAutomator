@@ -2,3 +2,30 @@
 __pycache__
 Output Folder/*
 Input
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+.venv-build/
+venv/
+
+# Build output
+build/
+dist/
+
+# App output folders
+Output/
+OutputFolder/
+Output Folder/
+
+# Local editor files
+.vscode/
+.DS_Store
+
+# Local/private files
+Input/
+.env
+*.env
+secret.py
