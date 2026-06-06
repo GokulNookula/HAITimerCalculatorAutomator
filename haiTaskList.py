@@ -9,8 +9,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime
 import re
-# import secret
-import myThing #DELETE ME LATER once fully done coding
 
 
 def parseDate(dateText: str):
@@ -117,6 +115,20 @@ def findProjectViewButton(driver, targetProjectName):
 
     return False
 
+def waitForManualLoginToProjectList(driver, targetProjectName="Project Hedgehog - Evals", timeoutSeconds=300):
+    print(f"Manual login mode: please log in through the browser within {timeoutSeconds // 60} minutes.")
+    print("Waiting until the project list loads and the 'View project' button is visible...")
+
+    try:
+        return WebDriverWait(driver, timeoutSeconds, poll_frequency=1).until(
+            lambda d: findProjectViewButton(d, targetProjectName)
+        )
+    except TimeoutException as error:
+        raise RuntimeError(
+            f"Closed because the user did not login on time. "
+            f"The scraper waited {timeoutSeconds // 60} minutes and never saw the 'View project' button."
+        ) from error
+
 def openHandshakeProjectByName(driver, targetProjectName="Project Hedgehog - Evals"):
     normalizedTargetProjectName = normalizeHandshakeProjectName(targetProjectName)
 
@@ -183,7 +195,7 @@ def openHandshakeProjectByName(driver, targetProjectName="Project Hedgehog - Eva
     print(f"Opened Handshake project: {projectNameHeader.text}")
     return projectNameHeader.text
 
-def loginToHandshakeAI(driver):
+def loginToHandshakeAI(driver, email, password, netid):
     # Wait for Google button and click it
     googleButton = waitForElement(
         driver,
@@ -223,7 +235,8 @@ def loginToHandshakeAI(driver):
                 EC.presence_of_element_located,
                 "Could not find the Google email input."
             )
-            emailInput.send_keys(myThing.email)
+            # emailInput.send_keys(myThing.email)
+            emailInput.send_keys(email)
 
             # Clicking next button
             nextButton = waitForElement(
@@ -245,7 +258,8 @@ def loginToHandshakeAI(driver):
                 EC.presence_of_element_located,
                 "Could not find the UCR username input."
             )
-            usernameInput.send_keys(myThing.netid)
+            # usernameInput.send_keys(myThing.netid)
+            usernameInput.send_keys(netid)
 
             # Locate and fill in the password field
             passwordInput = waitForElement(
@@ -256,7 +270,8 @@ def loginToHandshakeAI(driver):
                 EC.presence_of_element_located,
                 "Could not find the UCR password input."
             )
-            passwordInput.send_keys(myThing.password)
+            # passwordInput.send_keys(myThing.password)
+            passwordInput.send_keys(password)
 
             # Locate and click the Sign In button
             signInButton = waitForElement(
@@ -826,7 +841,14 @@ def paymentSectionScraper(driver, startDate, endDate, projName):
     print(f"Found {len(handshakeWeeklySummaryData)} payment weeks for {projName}.")
     return handshakeWeeklySummaryData
 
-def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeBrowserWhenDone: bool = True):
+def haiTaskListScraper(link: str, startDateInput: str, 
+                       endDateInput: str, 
+                       closeBrowserWhenDone: bool = True,
+                       email: str | None = None,
+                       password: str | None = None,
+                       netid: str | None = None,
+                       useAutomaticUcrLogin: bool = False,
+                       manualLoginTimeoutSeconds: int = 300):
     driver = None
     currentStep = "starting the scraper"
 
@@ -844,11 +866,39 @@ def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeB
         # Open the page
         driver.get(link)
 
-        currentStep = "logging into Handshake AI with Google"
-        loginToHandshakeAI(driver)
+        targetProjectName = "Project Hedgehog - Evals"
+
+        if useAutomaticUcrLogin:
+            email = (email or "").strip()
+            password = (password or "").strip()
+            netid = (netid or "").strip()
+
+            hasAllUcrCredentials = bool(email and password and netid)
+
+            if hasAllUcrCredentials:
+                currentStep = "logging into Handshake AI with UCR Google auto-login"
+                loginToHandshakeAI(driver, email, password, netid)
+            else:
+                print("UCR auto-login was selected, but email, password, or NetID was left blank.")
+                print("Email, password, and NetID must ALL be provided for auto-login to work.")
+                print("Switching to manual login now. Chrome will stay open for 5 minutes so you can log in.")
+
+                currentStep = "waiting up to 5 minutes for manual login because UCR credentials were incomplete"
+                waitForManualLoginToProjectList(
+                    driver,
+                    targetProjectName,
+                    timeoutSeconds=manualLoginTimeoutSeconds
+                )
+        else:
+            currentStep = "waiting up to 5 minutes for manual login"
+            waitForManualLoginToProjectList(
+                driver,
+                targetProjectName,
+                timeoutSeconds=manualLoginTimeoutSeconds
+            )
 
         currentStep = "opening the Hedgehog - Evals project"
-        openHandshakeProjectByName(driver, "Project Hedgehog - Evals")
+        openHandshakeProjectByName(driver, targetProjectName)
 
         currentStep = "getting the name of the project"
         # Getting the name of the project
@@ -873,7 +923,6 @@ def haiTaskListScraper(link: str, startDateInput: str, endDateInput: str, closeB
             "Could not find the project pay rate on the Handshake task page."
         )
         projPayRate = extractProjectPayRate(projPayRateElement.text)
-        print(f"Project pay rate found: {projPayRate}")
 
         currentStep = "getting the user's credential copy button"
         # Getting the user's credential copy button

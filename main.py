@@ -3,23 +3,44 @@ from haiCSVCreator import haiTaskListCSVCreator
 from haiExcelCreator import createHandshakeEarningsTracker
 
 def getUserInputs():
-    defaultTaskLink = "https://ai.joinhandshake.com/fellow/projects"
-
-    print("Handshake AI Task List CSV Tool")
-    print("Leave the task link blank to use the default Project Hedgehog task link.")
-
-    taskLink = input("Enter Handshake AI task link: ").strip()
-
-    if not taskLink:
-        taskLink = defaultTaskLink
+    taskLink = "https://ai.joinhandshake.com/fellow/projects"
 
     startDateInput = input("Enter start date MM/DD/YYYY: ").strip()
     endDateInput = input("Enter end date MM/DD/YYYY: ").strip()
 
-    outputFolder = input("Enter output folder name or press Enter for Output: ").strip()
+    outputFolder = input("Enter output folder name or press Enter to keep the default name \"Output Folder\": ").strip()
 
     if not outputFolder:
-        outputFolder = "Output"
+        outputFolder = "Output Folder"
+
+    useAutomaticUcrLogin = False
+    email = ""
+    password = ""
+    netid = ""
+
+    ucrStudentInput = input("Are you a UCR student and want to use automatic UCR login? yes/no, default no: ").strip().lower()
+
+    if ucrStudentInput in ["yes", "y"]:
+        useAutomaticUcrLogin = True
+        print("UCR auto-login requires your UCR Google email, UCR password, and UCR NetID.")
+        print("If you leave any of these blank, the scraper will switch to manual login and wait 5 minutes so you can login manually.")
+
+        email = input("Enter your UCR Google email: ").strip()
+        password = input("Enter your UCR password: ").strip()
+        netid = input("Enter your UCR NetID: ").strip()
+
+        hasAllUcrCredentials = bool(email and password and netid)
+
+        if not hasAllUcrCredentials:
+            print()
+            print("WARNING: You selected UCR auto-login, but email, password, or NetID was left blank.")
+            print("Auto-login requires ALL 3 values: email, password, and NetID.")
+            print("The scraper will switch to MANUAL LOGIN when Chrome opens.")
+            print("You will have 5 minutes to login manually before the program closes.")
+            print()
+    else:
+        print("WARNING: Manual login selected. Chrome will open and you will have 5 minutes to log in.")
+        print("The scraper will continue once it sees the 'View project' button.")
 
     keepBrowserOpenInput = input("Keep browser open after scraping? yes/no, default no: ").strip().lower()
     closeBrowserWhenDone = keepBrowserOpenInput not in ["yes", "y"]
@@ -44,6 +65,10 @@ def getUserInputs():
         closeBrowserWhenDone,
         createExcelTracker,
         existingExcelPath,
+        useAutomaticUcrLogin,
+        email,
+        password,
+        netid,
     )
 
 
@@ -57,10 +82,23 @@ def main():
             closeBrowserWhenDone,
             createExcelTracker,
             existingExcelPath,
+            useAutomaticUcrLogin,
+            email,
+            password,
+            netid,
         ) = getUserInputs()
 
         # Run the Selenium task scraper first
-        taskDateDict, handshakeWeeklySummaryData = haiTaskListScraper(taskLink, startDateInput, endDateInput, closeBrowserWhenDone)
+        taskDateDict, handshakeWeeklySummaryData = haiTaskListScraper(
+            link=taskLink,
+            startDateInput=startDateInput,
+            endDateInput=endDateInput,
+            closeBrowserWhenDone=closeBrowserWhenDone,
+            email=email,
+            password=password,
+            netid=netid,
+            useAutomaticUcrLogin=useAutomaticUcrLogin,
+        )
 
         if not taskDateDict:
             print("No CSV was created because the scraper did not return any task rows.")
