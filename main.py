@@ -5,8 +5,11 @@ from haiExcelCreator import createHandshakeEarningsTracker
 def getUserInputs():
     taskLink = "https://ai.joinhandshake.com/fellow/projects"
 
-    startDateInput = input("Enter start date MM/DD/YYYY: ").strip()
-    endDateInput = input("Enter end date MM/DD/YYYY: ").strip()
+    print("Welcome to HAI Automatic Paycheck Calculator")
+    print()
+
+    startDateInput = input("Enter the start date. Only tasks and payments on or after this date will be included in the format MM/DD/YYYY: ").strip()
+    endDateInput = input("Enter the end date. Only tasks and payments on or before this date will be included in the format MM/DD/YYYY: ").strip()
 
     outputFolder = input("Enter output folder name or press Enter to keep the default name \"Output Folder\": ").strip()
 
@@ -18,7 +21,7 @@ def getUserInputs():
     password = ""
     netid = ""
 
-    ucrStudentInput = input("Are you a UCR student and want to use automatic UCR login? yes/no, default no: ").strip().lower()
+    ucrStudentInput = input("Are you a UCR student? Enter yes to use automatic UCR login, or press Enter for manual login (default: no): ").strip().lower()
 
     if ucrStudentInput in ["yes", "y"]:
         useAutomaticUcrLogin = True
@@ -42,16 +45,18 @@ def getUserInputs():
         print("WARNING: Manual login selected. Chrome will open and you will have 5 minutes to log in.")
         print("The scraper will continue once it sees the 'View project' button.")
 
-    keepBrowserOpenInput = input("Keep browser open after scraping? yes/no, default no: ").strip().lower()
-    closeBrowserWhenDone = keepBrowserOpenInput not in ["yes", "y"]
+    # Always close the browser when the scraper finishes.
+    closeBrowserWhenDone = True
 
-    createExcelInput = input("Create or update Excel tracker after CSV? yes/no, default yes: ").strip().lower()
+    createExcelInput = input(
+        "Would you like the tool to automatically create or update the Handshake Earnings Tracker Excel file after scraping? Enter yes or no, or press Enter to use the default (yes): "
+        ).strip().lower()
     createExcelTracker = createExcelInput not in ["no", "n"]
 
     existingExcelPath = None
     if createExcelTracker:
         existingExcelInput = input(
-            "Enter existing Excel tracker file/folder path to update, or press Enter to create a new tracker: "
+            "Enter existing Excel tracker file/folder path to update, or press Enter to create a new Excel Tracker File: "
         ).strip()
 
         if existingExcelInput:

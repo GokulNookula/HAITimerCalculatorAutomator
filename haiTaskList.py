@@ -529,34 +529,50 @@ def findPaymentTimeRangeDropdown(driver):
     return False
 
 def selectPaymentTimeRangeAllTime(driver):
-    timeRangeDropdown = WebDriverWait(driver, 60).until(
-        lambda d: findPaymentTimeRangeDropdown(d)
-    )
+    maxAttempts = 3
+    lastError = None
 
-    currentDropdownText = getElementTextContent(driver, timeRangeDropdown).strip().lower()
+    for attemptNumber in range(1, maxAttempts + 1):
+        try:
+            print(f"Selecting payment time range as All time. Attempt {attemptNumber} of {maxAttempts}.")
 
-    if currentDropdownText == "all time":
-        WebDriverWait(driver, 60).until(lambda d: len(getPaymentWeekButtons(d)) > 0)
-        return
+            timeRangeDropdown = WebDriverWait(driver, 60).until(
+                lambda d: findPaymentTimeRangeDropdown(d)
+            )
 
-    safeClickElement(driver, timeRangeDropdown)
+            currentDropdownText = getElementTextContent(driver, timeRangeDropdown).strip().lower()
 
-    allTimeOption = WebDriverWait(driver, 30).until(
-        lambda d: findDropdownOptionByText(d, "All time")
-    )
+            if currentDropdownText == "all time":
+                WebDriverWait(driver, 60).until(lambda d: len(getPaymentWeekButtons(d)) > 0)
+                return
 
-    safeClickElement(driver, allTimeOption)
+            safeClickElement(driver, timeRangeDropdown)
 
-    # Do NOT reuse the old dropdown element after clicking All time.
-    # The page re-renders, so re-find the dropdown fresh until it says All time.
-    WebDriverWait(driver, 60).until(
-        lambda d: getElementTextContent(d, findPaymentTimeRangeDropdown(d)).strip().lower() == "all time"
-    )
+            allTimeOption = WebDriverWait(driver, 30).until(
+                lambda d: findDropdownOptionByText(d, "All time")
+            )
 
-    # Wait until the payment rows from the All time view exist after the re-render.
-    WebDriverWait(driver, 60).until(
-        lambda d: len(getPaymentWeekButtons(d)) > 0
-    )
+            safeClickElement(driver, allTimeOption)
+
+            # Do NOT reuse the old dropdown element after clicking All time.
+            # The page re-renders, so re-find the dropdown fresh until it says All time.
+            WebDriverWait(driver, 60).until(
+                lambda d: getElementTextContent(d, findPaymentTimeRangeDropdown(d)).strip().lower() == "all time"
+            )
+
+            # Wait until the payment rows from the All time view exist after the re-render.
+            WebDriverWait(driver, 60).until(
+                lambda d: len(getPaymentWeekButtons(d)) > 0
+            )
+
+            return
+
+        except (TimeoutException, WebDriverException, StaleElementReferenceException) as error:
+            lastError = error
+            print(f"Attempt {attemptNumber} failed while selecting All time.")
+
+            if attemptNumber == maxAttempts:
+                raise RuntimeError("Could not select the payment time range as All time after 2 attempts.") from lastError
 
 def extractPaymentWeekLabel(driver, paymentWeekButton):
     ariaLabel = paymentWeekButton.get_attribute("aria-label") or ""
